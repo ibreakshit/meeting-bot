@@ -132,13 +132,16 @@ Each event gets exactly one outcome with a reason; the first matching rule wins:
 - A group starts at its earliest member start and ends at its latest member end.
 - A group joins if any member's decision is join.
 - An override set on a group is stored on every member's instance key, so it survives reschedules and changes in group membership.
-- The group key, sent to the bot as `eventId`, is derived from the sorted member instance keys.
+- The group's primary member is the member whose decision made the group join; among several, the earliest start wins, then the lexicographically smallest Google event ID.
+- The primary member's Google event ID is sent to the bot as `eventId` (for a recurring occurrence this is the instance ID, such as `abc123_20261103T010000Z`, which keeps its original-start suffix when the occurrence is moved).
+  It appears in bot logs, callbacks and the dashboard, and can be looked up with `events.get`.
+- `eventId` is metadata only: the bot names recordings by `botId`, and the scheduler never matches by `eventId` (see Dispatch).
 
 ## Dispatch
 
 The tick loop runs every 10 s: rebuild groups, run the planner, apply its actions, and save state only if something changed.
 
-- **Push:** when the group joins, `now >= start - SCHEDULER_JOIN_LEAD_SECONDS` and `now < end`, and no dispatch record exists, `LPUSH` the job and record `{payload, pushedAt}`.
+- **Push:** when the group joins, `now >= start - SCHEDULER_JOIN_LEAD_SECONDS` and `now < end`, and no dispatch record exists, `LPUSH` the job and record `{payload, pushedAt, memberInstanceKeys}` keyed by the payload's `botId`.
   A meeting that started while the scheduler was down is still dispatched if it has not ended.
 - **Remove:** while the pushed payload is still in the queue (checked with `LPOS`), `LREM` it when:
   - the group moved later (it is pushed again at the new time),
@@ -155,8 +158,8 @@ Job payload (the existing `MeetingJoinRedisParams` contract):
 | `url` | Original join URL |
 | `name` | `SCHEDULER_BOT_NAME` |
 | `timezone` | The calendar's time zone |
-| `eventId` | The group key |
-| `botId` | A new UUID per dispatch |
+| `eventId` | The Google event ID of the group's primary member |
+| `botId` | A new UUID per dispatch; the key for matching every callback |
 | `teamId`, `userId`, `bearerToken` | `SCHEDULER_TEAM_ID`, `SCHEDULER_USER_ID`, `SCHEDULER_BEARER_TOKEN` |
 
 ## Bot status and log ingest
@@ -167,7 +170,8 @@ The bot already reports to `AUTH_BASE_URL_V2`; compose sets it to `http://calend
 - `PATCH /v2/meeting/app/bot/log` with `{eventId, botId, provider, level, message, category, subCategory}`, sent during a job for lobby, unsupported-meeting and recording events.
 - Both require `Authorization: Bearer <SCHEDULER_BEARER_TOKEN>` (constant-time comparison) and return 401 otherwise; bodies are validated and malformed ones get 400.
 - Both reply `{"success": true}` so the bot logs no errors.
-- Reports are matched to groups by `eventId` and `botId`; reports for jobs the scheduler did not dispatch are stored as unscheduled.
+- Reports are matched by `botId` only, through the dispatch record, so they land on the right row even if the group's membership or primary member changed after dispatch, or the same meeting was dispatched again after a reschedule (same `eventId`, new `botId`).
+- Reports whose `botId` has no dispatch record are stored as unscheduled.
 - The last 200 outcomes are kept in state.
 
 The final status comes from the status callback, because it is the only callback sent for both success and failure.
