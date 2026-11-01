@@ -541,6 +541,19 @@ export class GoogleMeetBot extends MeetBotBase {
 
     pushState('joined');
 
+    // Start recording immediately on admission; dismiss post-join prompts in
+    // parallel so they don't delay the start (the in-page interval started by
+    // recordMeetingPage keeps dismissing them for the rest of the meeting).
+    const dismissingPrompts = this.dismissPostJoinPrompts();
+
+    this._logger.info('Begin recording...');
+    await this.recordMeetingPage({ teamId, eventId, userId, botId, uploader });
+    await dismissingPrompts;
+
+    pushState('finished');
+  }
+
+  private async dismissPostJoinPrompts(): Promise<void> {
     try {
       this._logger.info('Waiting for the "Got it" button...');
       await this.page.waitForSelector('button:has-text("Got it")', { timeout: 3000 });
@@ -638,12 +651,6 @@ export class GoogleMeetBot extends MeetBotBase {
     } catch (error) {
       this._logger.info('Error checking/dismissing device notifications...', { error });
     }
-
-    // Recording the meeting page
-    this._logger.info('Begin recording...');
-    await this.recordMeetingPage({ teamId, eventId, userId, botId, uploader });
-
-    pushState('finished');
   }
 
   private async recordMeetingPage(
