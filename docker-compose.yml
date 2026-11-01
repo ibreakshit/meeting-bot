@@ -29,9 +29,9 @@ services:
     environment:
       - NODE_ENV=development
       # Defaults to the bundled redis service over the compose network (.env's
-      # host.docker.internal is wrong for the in-compose redis). Override to attach
+      # host.internal is wrong for the in-compose redis). Override to attach
       # the bot to another Redis — e.g. a local backend's queue so UI-triggered
-      # jobs reach it: REDIS_HOST=host.docker.internal docker compose up
+      # jobs reach it: REDIS_HOST=host.internal docker compose up
       - REDIS_HOST=${REDIS_HOST:-redis}
       # Default to the bundled chrome-cdp sidecar so Google Meet joins use a real,
       # signed-in-capable Chrome instead of the bot's in-container Chromium (which
