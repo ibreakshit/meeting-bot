@@ -160,6 +160,7 @@ export class RedisConsumerService {
         const joinParams: JoinParams = {
           url: meetingParams.url,
           name: meetingParams.name,
+          thumbnailId: meetingParams.thumbnailId,
           bearerToken: meetingParams.bearerToken,
           teamId: meetingParams.teamId,
           timezone: meetingParams.timezone,

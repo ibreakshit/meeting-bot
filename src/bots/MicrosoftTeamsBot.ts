@@ -1,4 +1,5 @@
-import { Page } from 'playwright';
+import { configureBotCameraControls, installBotCamera } from '../lib/botCamera';
+import { errors, Page } from 'playwright';
 import { JoinParams } from './AbstractMeetBot';
 import { BotStatus } from '../types';
 import config from '../config';
@@ -10,7 +11,7 @@ import { IUploader } from '../middleware/disk-uploader';
 import { Logger } from 'winston';
 import { retryActionWithWait } from '../util/resilience';
 import { uploadDebugImage } from '../services/bugService';
-import createBrowserContext from '../lib/chromium';
+import createBrowserContext, { closeBotBrowser } from '../lib/chromium';
 import { browserLogCaptureCallback } from '../util/logger';
 import { MICROSOFT_REQUEST_DENIED } from '../constants';
 import { FFmpegRecorder } from '../lib/ffmpegRecorder';
@@ -30,7 +31,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     this._logger = logger;
     this._correlationId = correlationId;
   }
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, uploader }: JoinParams): Promise<void> {
     const _state: BotStatus[] = ['processing'];
 
     const handleUpload = async () => {
@@ -42,7 +43,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
 
     try {
       const pushState = (st: BotStatus) => _state.push(st);
-      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, pushState, uploader });
+      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, pushState, uploader });
 
       // Finish the upload from the temp video
       const uploadResult = await handleUpload();
@@ -78,24 +79,16 @@ export class MicrosoftTeamsBot extends MeetBotBase {
 
       throw error;
     } finally {
-      // Guarantee chrome subprocess tree is reaped regardless of exit path.
-      // No-op if a deeper code path already closed the browser.
+      // Persistent browser contexts must be closed even when browser() is null.
       try {
-        const browser = this.page?.context().browser();
-        if (browser?.isConnected()) {
-          await browser.close();
-          this._logger.info('Browser closed in join finally');
-        } else if (this.page?.context()) {
-          await this.page.context().close();
-          this._logger.info('Persistent browser context closed in join finally');
-        }
+        await closeBotBrowser(this.page);
       } catch (cleanupErr) {
         this._logger.warn('Browser cleanup in join finally failed (non-fatal)', { error: cleanupErr });
       }
     }
   }
 
-  private async joinMeeting({ url, name, teamId, userId, eventId, botId, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
+  private async joinMeeting({ url, name, bearerToken, thumbnailId, teamId, userId, eventId, botId, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
     const joinButtonSelectors = [
       'button[aria-label="Join meeting from this browser"]',
       'button[aria-label="Continue on this browser"]',
@@ -104,19 +97,35 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       'button:has-text("Join from browser")',
     ];
 
-    const clickFirstVisibleSelector = async (page: Page, selectors: string[], timeoutMs: number, logPrefix: string): Promise<boolean> => {
+    const openPrejoin = async (page: Page, selectors: string[], timeoutMs: number, logPrefix: string): Promise<boolean> => {
       const startedAt = Date.now();
+      const prejoin = page.locator('input[data-tid="prejoin-display-name-input"]:visible, #prejoin-join-button:visible').first();
       for (const selector of selectors) {
         this._logger.info(`${logPrefix}: checking selector`, { selector });
       }
 
       while ((Date.now() - startedAt) < timeoutMs) {
+        // Teams can open prejoin automatically, including while the launcher click is pending.
+        if (await prejoin.isVisible()) {
+          this._logger.info(`${logPrefix}: prejoin is already open`);
+          return true;
+        }
         for (const selector of selectors) {
           const button = page.locator(selector).first();
           if (await button.isVisible({ timeout: 500 }).catch(() => false)) {
             this._logger.info(`${logPrefix}: found button`, { selector });
-            await button.click({ force: true });
-            return true;
+            const remainingMs = timeoutMs - (Date.now() - startedAt);
+            if (remainingMs <= 0) return false;
+            try {
+              await button.click({ force: true, timeout: Math.min(1500, remainingMs) });
+              return true;
+            } catch (error) {
+              if (await prejoin.isVisible()) {
+                this._logger.info(`${logPrefix}: prejoin opened during the launcher click`);
+                return true;
+              }
+              if (!(error instanceof errors.TimeoutError)) throw error;
+            }
           }
         }
         await page.waitForTimeout(500);
@@ -134,7 +143,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
         warmupPage = await createBrowserContext(url, this._correlationId, 'microsoft');
         this._logger.info('Pre-warming: Navigating to Teams meeting...');
         await warmupPage.goto(url, { waitUntil: 'domcontentloaded' });
-        await clickFirstVisibleSelector(warmupPage, joinButtonSelectors, 8000, 'Pre-warming');
+        await openPrejoin(warmupPage, joinButtonSelectors, 8000, 'Pre-warming');
         await warmupPage.locator('input[data-tid="prejoin-display-name-input"]').waitFor({ state: 'visible', timeout: 8000 }).catch(() => undefined);
         this._logger.info('Pre-warming complete - dialogs triggered');
       } catch (error) {
@@ -143,11 +152,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
         // Guarantee the warmup chrome tree is reaped even if the block above threw
         // mid-flight. join()'s outer finally only covers this.page, not warmupPage.
         try {
-          const browser = warmupPage?.context().browser();
-          if (browser?.isConnected()) {
-            this._logger.info('Pre-warming: Closing warmup browser...');
-            await browser.close();
-          }
+          await closeBotBrowser(warmupPage);
         } catch (cleanupErr) {
           this._logger.warn('Pre-warming: warmup browser cleanup failed (non-fatal)', { error: cleanupErr });
         }
@@ -160,15 +165,16 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     this._logger.info('Launching browser for actual meeting...');
 
     this.page = await createBrowserContext(url, this._correlationId, 'microsoft');
+    await installBotCamera(this.page, { thumbnailId, bearerToken, authBaseUrlV2: config.authBaseUrlV2 });
 
     this._logger.info('Navigating to Microsoft Teams Meeting URL...');
     await this.page.goto(url, { waitUntil: 'domcontentloaded' });
 
     // Try to find and click "Join from browser" button
     this._logger.info('Waiting for Join meeting from browser button...');
-    const buttonClicked = await clickFirstVisibleSelector(this.page, joinButtonSelectors, 60000, 'Join from browser');
+    const prejoinOpened = await openPrejoin(this.page, joinButtonSelectors, 60000, 'Join from browser');
 
-    if (!buttonClicked) {
+    if (!prejoinOpened) {
       this._logger.info('Join from browser button not found, proceeding anyway...');
     }
 
@@ -251,7 +257,8 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       }
     };
 
-    await toggleDevices();
+    if (thumbnailId) await configureBotCameraControls(this.page, 'microsoft', this._logger);
+    else await toggleDevices();
 
     this._logger.info('Clicking the join button...');
     await retryActionWithWait(
@@ -307,12 +314,13 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       this._logger.error('Cant finish wait at the lobby check', { userDenied, waitingAtLobbySuccess: false, bodyText });
 
       this._logger.error('Closing the browser on error...', error);
-      await this.page.context().browser()?.close();
+      await closeBotBrowser(this.page);
 
       // Don't retry lobby errors - if user doesn't admit bot, retrying won't help
       throw new WaitingAtLobbyRetryError('Microsoft Teams Meeting bot could not enter the meeting...', bodyText ?? '', false, 0);
     }
 
+    if (thumbnailId) await configureBotCameraControls(this.page, 'microsoft', this._logger);
     pushState('joined');
 
     const dismissDeviceChecksAndNotifications = async () => {
@@ -537,7 +545,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
           // Max duration timeout - safety limit (3 hours default in production)
           setTimeout(() => {
             console.log(`Max recording duration (${maxDuration / 60000} minutes) reached, ending meeting`);
-            (window as any).screenAppMeetEnd();
+            (window as unknown as { screenAppMeetEnd(): void }).screenAppMeetEnd();
           }, maxDuration);
           console.log(`Max duration timeout set to ${maxDuration / 60000} minutes (safety limit)`);
 
@@ -634,11 +642,11 @@ export class MicrosoftTeamsBot extends MeetBotBase {
             }
 
             const alonePhrases = [
-              "you're the only one here",
-              "you’re the only one here",
+              'you\'re the only one here',
+              'you’re the only one here',
               'you are the only one here',
-              "you're the only one in this meeting",
-              "you’re the only one in this meeting",
+              'you\'re the only one in this meeting',
+              'you’re the only one in this meeting',
               'you are the only one in this meeting',
               'only one in this meeting',
               'only you are here',
@@ -734,7 +742,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
               if (meetingState === 'ended') {
                 console.log('Teams meeting ended page state detected, ending recording.');
                 clearInterval(interval);
-                (window as any).screenAppMeetEnd();
+                (window as unknown as { screenAppMeetEnd(): void }).screenAppMeetEnd();
                 return;
               }
 
@@ -763,7 +771,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
 
               console.log('Bot is alone, ending Teams recording', { inferredCount, meetingState });
               clearInterval(interval);
-              (window as any).screenAppMeetEnd();
+              (window as unknown as { screenAppMeetEnd(): void }).screenAppMeetEnd();
             } catch (error) {
               console.error('Participant detection error:', error);
             }
@@ -833,7 +841,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
 
       // Close browser
       this._logger.info('Closing the browser...');
-      await this.page.context().browser()?.close();
+      await closeBotBrowser(this.page);
 
       // Log final status. The real remote upload + true completion is logged in
       // join() after handleUpload: 'Recording and upload completed successfully'.

@@ -10,6 +10,7 @@ export interface BotLaunchParams {
   timezone: string;
   botId?: string;
   eventId?: string;
+  thumbnailId?: string;
 }
 
 export interface JoinParams {
@@ -21,6 +22,7 @@ export interface JoinParams {
   userId: string;
   botId?: string;
   eventId?: string;
+  thumbnailId?: string;
   uploader: IUploader;
 }
 

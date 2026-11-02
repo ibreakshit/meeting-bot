@@ -5,3 +5,15 @@ dist
 .git
 .gitignore
 .vscode
+.env
+.env.*
+!.env.example
+.chrome
+data
+gcp-key
+debug-videos
+assets/videos
+assets/screenshots
+test-results
+playwright-report
+.superpowers

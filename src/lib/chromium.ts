@@ -1,6 +1,7 @@
 import { Browser, BrowserContext, Page } from 'playwright';
 import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { join } from 'node:path';
 import config from '../config';
 import { getCorrelationIdLog } from '../util/logger';
 
@@ -15,6 +16,16 @@ const externalBrowserContexts = new WeakSet<BrowserContext>();
 
 export function isExternalBrowserContext(context?: BrowserContext | null): boolean {
   return Boolean(context && externalBrowserContexts.has(context));
+}
+
+export async function closeBotBrowser(page?: Page): Promise<void> {
+  if (!page) return;
+  const context = page.context();
+  const browser = context.browser();
+  // Disconnecting CDP alone leaves the meeting running in the persistent tab.
+  if (isExternalBrowserContext(context) && !page.isClosed()) await page.close();
+  if (browser?.isConnected()) await browser.close();
+  else if (!page.isClosed()) await context.close();
 }
 
 async function resizeBrowserWindow(page: Page, size: { width: number; height: number }, correlationId: string) {
@@ -128,9 +139,8 @@ async function createBrowserContext(url: string, correlationId: string, botType:
   const size = { width: 1280, height: 720 };
   const browserWindowSize = { width: size.width, height: size.height + 80 };
 
-  // Google Meet is sensitive to browser fingerprinting before admission. Keep
-  // its launch close to normal Chrome and reserve recording-heavy flags for
-  // platforms that need them.
+  // Use the same minimal Chrome launch for every provider. Tab capture and
+  // Teams' ffmpeg recorder do not need disabled web security or forced WebGL.
   const firstRunSuppressionArgs: string[] = [
     '--no-first-run',
     '--no-default-browser-check',
@@ -139,28 +149,12 @@ async function createBrowserContext(url: string, correlationId: string, botType:
     '--disable-default-apps',
   ];
 
-  const googleBrowserArgs: string[] = [
+  const browserArgs: string[] = [
     ...firstRunSuppressionArgs,
     '--no-sandbox',
     '--disable-setuid-sandbox',
     `--window-size=${browserWindowSize.width},${browserWindowSize.height}`,
     '--auto-accept-this-tab-capture',
-    '--autoplay-policy=no-user-gesture-required',
-  ];
-
-  const recordingBrowserArgs: string[] = [
-    ...firstRunSuppressionArgs,
-    '--enable-usermedia-screen-capturing',
-    '--allow-http-screen-capture',
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-web-security',
-    '--use-gl=angle',
-    '--use-angle=swiftshader',
-    `--window-size=${browserWindowSize.width},${browserWindowSize.height}`,
-    '--auto-accept-this-tab-capture',
-    '--enable-features=MediaRecorder',
-    '--enable-audio-service-out-of-process',
     '--autoplay-policy=no-user-gesture-required',
   ];
 
@@ -176,14 +170,8 @@ async function createBrowserContext(url: string, correlationId: string, botType:
   // and don't need fake devices:
   // - Google Meet: clicks "Continue without microphone and camera"
   // - Zoom: expects "Cannot detect your camera/microphone" notifications
-  const browserArgs = botType === 'google'
-    ? googleBrowserArgs
-    : botType === 'microsoft'
-      ? [...recordingBrowserArgs, ...fakeDeviceArgs]
-      : recordingBrowserArgs;
-  const ignoreDefaultArgs = botType === 'google'
-    ? ['--mute-audio', '--enable-automation']
-    : ['--mute-audio'];
+  if (botType === 'microsoft') browserArgs.push(...fakeDeviceArgs);
+  const ignoreDefaultArgs = ['--mute-audio', '--enable-automation'];
 
   // Teams-specific display args: kiosk mode prevents address bar from showing in ffmpeg recording
   // Google Meet and Zoom don't need this since they use tab capture (getDisplayMedia)
@@ -209,24 +197,35 @@ async function createBrowserContext(url: string, correlationId: string, botType:
     }),
   };
 
-  if (botType === 'google' && config.googleChromeCdpUrl) {
-    console.log(`${getCorrelationIdLog(correlationId)} Connecting Google bot to external Chrome`, {
-      cdpUrl: config.googleChromeCdpUrl,
+  // Teams captures the worker's X11 display and PulseAudio, so its browser
+  // must stay local. Google Meet and Zoom capture their own Chrome tab.
+  const cdpUrl = botType === 'microsoft' ? undefined :
+    config.chromeCdpUrl || (botType === 'google' ? config.googleChromeCdpUrl : undefined);
+  const userDataDir = botType === 'google' && config.googleChromeUserDataDir
+    ? config.googleChromeUserDataDir
+    : config.chromeUserDataDir && join(config.chromeUserDataDir, botType);
+
+  if (cdpUrl) {
+    console.log(`${getCorrelationIdLog(correlationId)} Connecting ${botType} bot to external Chrome`, {
+      cdpUrl,
     });
 
     const browser = await launchBrowserWithTimeout(
-      async () => await chromium.connectOverCDP(config.googleChromeCdpUrl!),
+      async () => await chromium.connectOverCDP(cdpUrl),
       60000,
       correlationId
     );
 
     const context = browser.contexts()[0] ?? await browser.newContext({
       ...contextOptions,
-      ...(config.googleChromeStorageStatePath ? {
+      ...(botType === 'google' && config.googleChromeStorageStatePath ? {
         storageState: config.googleChromeStorageStatePath,
       } : {}),
     });
     externalBrowserContexts.add(context);
+    if (botType !== 'google') {
+      await context.grantPermissions(['microphone', 'camera'], { origin: url });
+    }
 
     const page = await context.newPage();
     await resizeBrowserWindow(page, browserWindowSize, correlationId);
@@ -238,13 +237,13 @@ async function createBrowserContext(url: string, correlationId: string, botType:
     return page;
   }
 
-  if (botType === 'google' && config.googleChromeUserDataDir) {
-    console.log(`${getCorrelationIdLog(correlationId)} Launching Google bot with persistent Chrome profile`, {
-      userDataDir: config.googleChromeUserDataDir,
+  if (userDataDir) {
+    console.log(`${getCorrelationIdLog(correlationId)} Launching ${botType} bot with persistent Chrome profile`, {
+      userDataDir,
     });
 
     const context = await launchPersistentContextWithTimeout(
-      async () => await chromium.launchPersistentContext(config.googleChromeUserDataDir!, {
+      async () => await chromium.launchPersistentContext(userDataDir, {
         ...contextOptions,
         headless: false,
         handleSIGINT: false,
@@ -262,7 +261,7 @@ async function createBrowserContext(url: string, correlationId: string, botType:
     );
 
     const page = context.pages()[0] ?? await context.newPage();
-    await resizeBrowserWindow(page, browserWindowSize, correlationId);
+    if (botType !== 'microsoft') await resizeBrowserWindow(page, browserWindowSize, correlationId);
     await page.setViewportSize(size);
     attachBrowserErrorHandlers(context.browser(), context, page, correlationId);
 

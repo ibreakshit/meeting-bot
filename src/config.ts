@@ -67,6 +67,8 @@ export default {
     Number(process.env.MAX_RECORDING_DURATION_MINUTES) :
     180, // There's an upper limit on meeting duration 3 hours
   chromeExecutablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', // We use Google Chrome with Playwright for recording
+  chromeCdpUrl: process.env.CHROME_CDP_URL,
+  chromeUserDataDir: process.env.CHROME_USER_DATA_DIR,
   googleChromeCdpUrl: process.env.GOOGLE_CHROME_CDP_URL,
   googleChromeUserDataDir: process.env.GOOGLE_CHROME_USER_DATA_DIR,
   googleChromeStorageStatePath: process.env.GOOGLE_CHROME_STORAGE_STATE_PATH,
