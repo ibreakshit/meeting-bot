@@ -85,6 +85,9 @@ RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 RUN mkdir -p /usr/src/app/dist/_tempvideo \
     && chmod -R 777 /usr/src/app/dist/_tempvideo
 
+# The scheduler shares this image and persists encrypted account state here.
+RUN mkdir -p /data && chown nodejs:nodejs /data && chmod 700 /data
+
 # Create PulseAudio directories for non-root user
 RUN mkdir -p /run/user/1001 \
     && chown -R nodejs:nodejs /run/user/1001 \

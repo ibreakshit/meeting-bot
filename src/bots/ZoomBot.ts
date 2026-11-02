@@ -1,3 +1,4 @@
+import { configureBotCameraControls, installBotCamera } from '../lib/botCamera';
 import { Frame, Page } from 'playwright';
 import { JoinParams, AbstractMeetBot } from './AbstractMeetBot';
 import { BotStatus, WaitPromise } from '../types';
@@ -8,13 +9,13 @@ import { patchBotStatus } from '../services/botService';
 import { RecordingTask } from '../tasks/RecordingTask';
 import { ContextBridgeTask } from '../tasks/ContextBridgeTask';
 import { getWaitingPromise } from '../lib/promise';
-import createBrowserContext from '../lib/chromium';
+import createBrowserContext, { closeBotBrowser } from '../lib/chromium';
 import { uploadDebugImage } from '../services/bugService';
 import { Logger } from 'winston';
 import { handleWaitingAtLobbyError } from './MeetBotBase';
 import { ZOOM_REQUEST_DENIED } from '../constants';
 
-class BotBase extends AbstractMeetBot {
+abstract class BotBase extends AbstractMeetBot {
   protected page: Page;
   protected slightlySecretId: symbol; // Use any hard-to-guess identifier
   protected _logger: Logger;
@@ -25,9 +26,6 @@ class BotBase extends AbstractMeetBot {
     this._logger = logger;
     this._correlationId = correlationId;
   }
-  join(params: JoinParams): Promise<void> {
-    throw new Error('Function not implemented.');
-  }
 }
 
 export class ZoomBot extends BotBase {
@@ -37,7 +35,7 @@ export class ZoomBot extends BotBase {
 
   // TODO use base class for shared functions such as bot status and bot logging
   // TODO Lift the JoinParams to the constructor argument
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, uploader }: JoinParams): Promise<void> {
     const _state: BotStatus[] = ['processing'];
 
     const handleUpload = async () => {
@@ -49,7 +47,7 @@ export class ZoomBot extends BotBase {
     
     try {
       const pushState = (st: BotStatus) => _state.push(st);
-      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, pushState, uploader });
+      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, pushState, uploader });
       await patchBotStatus({ botId, eventId, provider: 'zoom', status: _state, token: bearerToken }, this._logger);
 
       // Finish the upload from the temp video
@@ -71,17 +69,9 @@ export class ZoomBot extends BotBase {
 
       throw error;
     } finally {
-      // Guarantee chrome subprocess tree is reaped regardless of exit path.
-      // No-op if a deeper code path already closed the browser.
+      // Close the meeting tab before disconnecting from persistent Chrome.
       try {
-        const browser = this.page?.context().browser();
-        if (browser?.isConnected()) {
-          await browser.close();
-          this._logger.info('Browser closed in join finally');
-        } else if (this.page?.context()) {
-          await this.page.context().close();
-          this._logger.info('Persistent browser context closed in join finally');
-        }
+        await closeBotBrowser(this.page);
       } catch (cleanupErr) {
         this._logger.warn('Browser cleanup in join finally failed (non-fatal)', { error: cleanupErr });
       }
@@ -93,6 +83,7 @@ export class ZoomBot extends BotBase {
     this._logger.info('Launching browser for Zoom...', { userId: params.userId });
 
     this.page = await createBrowserContext(url, this._correlationId, 'zoom');
+    await installBotCamera(this.page, { thumbnailId: params.thumbnailId, bearerToken: params.bearerToken, authBaseUrlV2: config.authBaseUrlV2 });
 
     await this.page.route('**/*.exe', (route) => {
       this._logger.info(`Detected .exe download: ${route.request().url()?.split('download')[0]}`);
@@ -290,12 +281,23 @@ export class ZoomBot extends BotBase {
       throw new Error(`Failed to get the Zoom PWA iframe on user ${params.userId}`);
     }
 
+    // Both prompts share a button label. Wait for each distinct question to
+    // disappear so slow dismissal cannot cause repeated clicks or block the next prompt.
+    const prejoin = iframe === this.page ? this.page : this.page.frameLocator('iframe#webclient');
+    for (const question of ['Do you want people to see you in the meeting?', 'Do you want people to hear you in the meeting?']) {
+      await this.page.addLocatorHandler(prejoin.getByText(question, { exact: true }), async () => {
+        this._logger.info('Continuing past Zoom microphone and camera prompt...', { question });
+        await prejoin.getByText('Continue without microphone and camera', { exact: true }).click();
+      });
+    }
+
     this._logger.info('Waiting for the input field to be visible...');
     await iframe.waitForSelector('input[type="text"]', { timeout: 60000 });
 
     this._logger.info('Filling the input field with the name...');
     await iframe.fill('input[type="text"]', name ? name : 'ScreenApp Notetaker');
 
+    if (params.thumbnailId) await configureBotCameraControls(iframe, 'zoom', this._logger);
     this._logger.info('Clicking the "Join" button...');
     const joinButton = iframe.locator('button', { hasText: 'Join' }).first();
     await joinButton.waitFor({ timeout: 15000 });
@@ -370,10 +372,11 @@ export class ZoomBot extends BotBase {
         throw new WaitingAtLobbyRetryError('Zoom bot could not enter the meeting...', bodyText ?? '', false, 0);
       }
 
+      if (params.thumbnailId) await configureBotCameraControls(iframe, 'zoom', this._logger);
       this._logger.info('Bot is entering the meeting after wait room...');
     } catch (error) {
       this._logger.info('Closing the browser on error...', error);
-      await this.page.context().browser()?.close();
+      await closeBotBrowser(this.page);
 
       throw error;
     }
@@ -520,7 +523,7 @@ export class ZoomBot extends BotBase {
     this._logger.info('Waiting for recording duration:', config.maxRecordingDuration, 'minutes...');
     waitingPromise.promise.then(async () => {
       this._logger.info('Closing the browser...');
-      await this.page.context().browser()?.close();
+      await closeBotBrowser(this.page);
 
       this._logger.info('Recording stopped; finalizing upload next...', { botId, eventId, userId, teamId });
     });

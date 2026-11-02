@@ -1,3 +1,4 @@
+import { configureBotCameraControls, installBotCamera } from '../lib/botCamera';
 import { JoinParams } from './AbstractMeetBot';
 import { BotStatus, WaitPromise } from '../types';
 import config from '../config';
@@ -26,7 +27,7 @@ export class GoogleMeetBot extends MeetBotBase {
     this._correlationId = correlationId;
   }
 
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, uploader }: JoinParams): Promise<void> {
     const _state: BotStatus[] = ['processing'];
 
     const handleUpload = async () => {
@@ -38,7 +39,7 @@ export class GoogleMeetBot extends MeetBotBase {
 
     try {
       const pushState = (st: BotStatus) => _state.push(st);
-      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader, pushState });
+      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, uploader, pushState });
 
       // Finish the upload from the temp video
       const uploadResult = await handleUpload();
@@ -86,16 +87,18 @@ export class GoogleMeetBot extends MeetBotBase {
     }
   }
 
-  private async joinMeeting({ url, name, teamId, userId, eventId, botId, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
+  private async joinMeeting({ url, name, bearerToken, thumbnailId, teamId, userId, eventId, botId, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
     this._logger.info('Launching browser...');
 
     this.page = await createBrowserContext(url, this._correlationId, 'google');
+    await installBotCamera(this.page, { thumbnailId, bearerToken, authBaseUrlV2: config.authBaseUrlV2 });
 
     this._logger.info('Navigating to Google Meet URL...');
     await this.page.goto(url, { waitUntil: 'domcontentloaded' });
 
     const nameInputSelector = 'input[type="text"]';
     const clickContinueWithoutDevicesIfPresent = async (timeout = 5000) => {
+      if (thumbnailId) return false;
       const continueWithoutDevicesButton = this.page
         .locator('button')
         .filter({ hasText: /Continue without microphone and camera|Ohne Mikrofon und Kamera fortfahren/i })
@@ -206,6 +209,7 @@ export class GoogleMeetBot extends MeetBotBase {
           }
         );
 
+        if (thumbnailId) await configureBotCameraControls(this.page, 'google', this._logger);
         this._logger.info('Filling the input field with the name...');
         await this.page.locator(nameInputSelector).first().fill(displayName);
         
@@ -539,6 +543,7 @@ export class GoogleMeetBot extends MeetBotBase {
       throw lobbyError;
     }
 
+    if (thumbnailId) await configureBotCameraControls(this.page, 'google', this._logger);
     pushState('joined');
 
     // Start recording immediately on admission; dismiss post-join prompts in
@@ -710,7 +715,7 @@ export class GoogleMeetBot extends MeetBotBase {
             return btoa(binary);
           }
           const base64 = arrayBufferToBase64(chunk);
-          await (window as any).screenAppSendData(slightlySecretId, base64);
+          await (window as unknown as { screenAppSendData(id: string, data: string): Promise<void> }).screenAppSendData(slightlySecretId, base64);
         };
 
         async function startRecording() {
@@ -722,7 +727,7 @@ export class GoogleMeetBot extends MeetBotBase {
             return;
           }
           
-          const stream: MediaStream = await (navigator.mediaDevices as any).getDisplayMedia({
+          const stream: MediaStream = await navigator.mediaDevices.getDisplayMedia({
             video: true,
             audio: {
               autoGainControl: false,
@@ -732,7 +737,7 @@ export class GoogleMeetBot extends MeetBotBase {
               noiseSuppression: false,
             },
             preferCurrentTab: true,
-          });
+          } as DisplayMediaStreamOptions);
 
           // Check if we actually got audio tracks
           const audioTracks = stream.getAudioTracks();
@@ -823,7 +828,7 @@ export class GoogleMeetBot extends MeetBotBase {
               }
 
               // Begin browser cleanup
-              (window as any).screenAppMeetEnd(slightlySecretId, recordedDurationSeconds);
+              (window as unknown as { screenAppMeetEnd(id: string, duration: number): void }).screenAppMeetEnd(slightlySecretId, recordedDurationSeconds);
             }
           };
 
