@@ -1,3 +1,4 @@
+import { TranscriptQueue } from '../transcription/queue';
 import { createHash } from 'node:crypto';
 import { isValidThumbnailId } from './settings';
 import { parseJoinLink } from './links';
@@ -7,7 +8,7 @@ import type {
   SchedulerConfig, StatusReport, StoredRecording
 } from './types';
 
-type LedgerConfig = Pick<SchedulerConfig, 'queueName' | 'resultList' | 'failureList' | 'workers'>;
+type LedgerConfig = Pick<SchedulerConfig, 'queueName' | 'resultList' | 'failureList' | 'workers'> & { transcriptionEnabled?: boolean; s3?: { bucket: string } };
 type RedisClient = ReturnType<typeof createClient>;
 
 export interface LedgerDiagnostic {
@@ -292,7 +293,7 @@ function digest(source: string, raw: string): string { return createHash('sha256
 function recordingMetadata(payload: RecordingPayload): StoredRecording | undefined {
   const metadata = payload.metadata;
   if (!metadata || !nonempty(metadata.botId)) return undefined;
-  const recording: StoredRecording = { botId: metadata.botId, recordingId: payload.recordingId, timestamp: payload.timestamp };
+  const recording: StoredRecording = { botId: metadata.botId, recordingId: payload.recordingId, timestamp: payload.timestamp, acceptedAt: Date.now() };
   if (typeof metadata.duration === 'number' && Number.isFinite(metadata.duration) && metadata.duration >= 0) recording.duration = metadata.duration;
   if (nonempty(metadata.contentType)) recording.contentType = metadata.contentType;
   const storage = metadata.storage;
@@ -313,6 +314,7 @@ function validateRecording(value: unknown): asserts value is RecordingPayload {
 export class RedisLedger {
   private readonly keys: string[];
   private readonly marker: string;
+  private readonly transcripts?: TranscriptQueue;
 
   constructor(private readonly client: RedisClient, private readonly config: LedgerConfig) {
     const queueNames = [config.queueName, config.resultList, config.failureList, ...config.workers.map(worker => worker.processingQueue)];
@@ -320,6 +322,7 @@ export class RedisLedger {
     const prefix = `${config.queueName}:scheduler:`;
     this.keys = ['dataset', 'dispatches', 'instances', 'history', 'seen', 'evidence', 'archives'].map(name => prefix + name).concat(config.queueName);
     if (queueNames.some(name => this.keys.slice(0, 7).includes(name))) throw new Error('Redis list collides with scheduler ledger');
+    if (config.transcriptionEnabled && config.s3?.bucket) this.transcripts = new TranscriptQueue(client, config.queueName, config.s3.bucket);
     this.marker = JSON.stringify({ version: 1, queueName: config.queueName, resultList: config.resultList, failureList: config.failureList });
   }
 
@@ -347,6 +350,18 @@ export class RedisLedger {
   async checkPersistence(): Promise<void> {
     await this.persistenceConfiguration();
     if (await this.client.get(this.keys[0]) !== this.marker) throw new Error('Scheduler dataset marker missing or incompatible; explicit initialization required');
+    await this.transcripts?.activate();
+  }
+
+  async reconcileTranscriptions(): Promise<void> {
+    if (!this.transcripts) return;
+    await this.transcripts.activate();
+    for (const record of await this.listDispatches()) {
+      const r = record.recording;
+      if (!r || r.locationConflict || r.storage?.provider !== 's3' || !r.storage.bucket || r.storage.bucket !== this.config.s3?.bucket || !r.storage.key) continue;
+      try { await this.transcripts.ensureJob({ botId: record.botId, recordingId: r.recordingId, bucket: r.storage.bucket, key: r.storage.key }); }
+      catch (error) { if (!(error instanceof Error) || !/not eligible/.test(error.message)) throw error; }
+    }
   }
 
   async listDispatches(): Promise<DispatchRecord[]> {
@@ -403,8 +418,9 @@ export class RedisLedger {
   async addRecording(payload: RecordingPayload): Promise<void> {
     validateRecording(payload);
     const raw = JSON.stringify(payload);
-    const recording = recordingMetadata(payload);
+    const recording = payload.status === 'completed' ? recordingMetadata(payload) : undefined;
     await this.run(REPORT_SCRIPT, [recording?.botId ?? '', raw, 'recording', JSON.stringify(recording ?? null), digest('webhook', raw)]);
+    await this.reconcileTranscriptions().catch(() => undefined);
   }
 
   async ingestResults(limit = 100): Promise<{ pending: boolean }> {
@@ -432,6 +448,7 @@ export class RedisLedger {
       }
     }
     const lengths = await Promise.all([this.client.lLen(this.config.resultList), this.client.lLen(this.config.failureList)]);
+    await this.reconcileTranscriptions().catch(() => undefined);
     return { pending: lengths.some(length => length > 0) };
   }
 

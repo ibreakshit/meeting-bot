@@ -145,6 +145,7 @@ export interface RecordingPayload {
 }
 
 export interface StoredRecording {
+  acceptedAt?: number;
   botId: string;
   recordingId: string;
   timestamp: string;
@@ -201,6 +202,7 @@ export type PlannerAction =
   | { type: 'annotate'; dispatch: DispatchRecord; changedFields: string[]; group?: MeetingGroup };
 
 export interface SchedulerConfig {
+  transcriptionEnabled?: boolean;
   port: number;
   googleClientId: string;
   googleClientSecret: string;

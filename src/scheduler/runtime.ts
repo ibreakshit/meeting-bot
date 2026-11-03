@@ -11,7 +11,7 @@ import type { SchedulerStore } from './store';
 import type { DispatchRecord, MeetingGroup, RuntimeView, SchedulerConfig, WorkerObservation, WorkerRegistration } from './types';
 
 type RuntimeLedger = Pick<RedisLedger, 'checkPersistence' | 'ingestResults' | 'listDispatches' | 'pendingPayloads' |
-  'processingPayloads' | 'enqueue' | 'remove' | 'observe' | 'attachMembers'>;
+  'processingPayloads' | 'enqueue' | 'remove' | 'observe' | 'attachMembers'> & Partial<Pick<RedisLedger, 'reconcileTranscriptions'>>;
 type RuntimeOptions = {
   now?: () => number;
   random?: () => number;
@@ -142,6 +142,8 @@ export class SchedulerRuntime {
     await this.store.flush();
     await this.ledger.checkPersistence();
     this.ingestionPending = (await this.ledger.ingestResults()).pending;
+    // Transcript recovery is independent of recording readiness and dispatch health.
+    await this.ledger.reconcileTranscriptions?.().catch(() => undefined);
     const previous = this.observations;
     this.observations = await Promise.all(this.config.workers.map(async worker => {
       try {
