@@ -509,3 +509,16 @@ test('Bot Settings preserves saved settings when image processing or durable per
     assert.equal(f.state.botSettings?.name, 'Original');
   });
 });
+
+test('mounted transcript routes use existing owner authentication before reading private artifacts', async () => {
+  const f = fixture(); f.deps.config.basePath = '/scheduler'; let reads = 0;
+  f.deps.transcriptQueue = { get: async () => { reads++; return null; } };
+  f.deps.transcriptStorage = { readArtifact: async () => { throw new Error('must not read'); } };
+  await server(f, async url => {
+    const unauthenticated = await fetch(url + '/scheduler/recordings/b/transcript', { headers: host });
+    assert.equal(unauthenticated.status, 401); assert.equal(reads, 0);
+    const authorizedCookie = `scheduler_session_${Buffer.from('/scheduler').toString('base64url')}=${f.deps.crypto.signCookie({ email: 'owner@example.com' }, 3600)}`;
+    assert.equal((await fetch(url + '/scheduler/recordings/b/transcript?version=bad', { headers: { ...host, Cookie: authorizedCookie } })).status, 400);
+    assert.equal((await fetch(url + '/scheduler/recordings/b/transcript/download?format=html', { headers: { ...host, Cookie: authorizedCookie } })).status, 400);
+  });
+});
