@@ -14,7 +14,11 @@
     "test:scheduler": "node -r ts-node/register --test --test-concurrency=1 src/scheduler/*.test.ts",
     "test:bot-camera": "node -r ts-node/register --test src/lib/botCamera.test.ts",
     "lint:scheduler": "eslint \"src/scheduler/**/*.ts\" --max-warnings 0",
-    "lint": "eslint \"*/**/*.{js,ts}\" --quiet --fix"
+    "lint": "eslint \"*/**/*.{js,ts}\" --quiet --fix",
+    "start:transcription": "ts-node src/transcription/index.ts",
+    "transcription:retry": "ts-node src/transcription/index.ts retry",
+    "transcription:status": "ts-node src/transcription/index.ts status",
+    "test:transcription": "node -r ts-node/register --test --test-concurrency=1 src/transcription/*.test.ts"
   },
   "keywords": [],
   "author": "screenappai",
