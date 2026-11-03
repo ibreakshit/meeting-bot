@@ -22,3 +22,18 @@ test('published original is explicitly selected when correction fails; private f
     assert.equal((await fetch(url + '/b/download?format=html')).status, 400);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+test('a previous successful correction remains selectable after a failed retry and Original selection', async () => {
+  const original = { revisionId: 'original', sourceHash: 'hash', keys: {}, hashes: {} };
+  const correction = { ...original, revisionId: 'corrected-1' };
+  const handlers = createTranscriptHandlers({ bucket: 'private', getRecording: async botId => ({ botId, recordingId: 'r', timestamp: '2026-11-04', storage: { provider: 's3', bucket: 'private', key: 'secret' } }),
+    transcriptQueue: { get: async () => ({ originalState: 'ready', correctionState: 'failed', original, latestCorrection: correction, warnings: [] } as unknown as TranscriptManifest) },
+    transcriptStorage: { readArtifact: async manifest => Buffer.from(JSON.stringify({ segments: [{ id: 's', text: manifest.revisionId === 'original' ? 'gloomit' : 'Google Meet', words: [] }] })) } });
+  const app = express(); app.get('/:botId', handlers.view);
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/b`;
+  try {
+    const latest = await (await fetch(url)).json(); assert.equal(latest.selectedRevision, 'corrected-1'); assert.equal(latest.correctionState, 'failed');
+    const source = await (await fetch(url + '?version=original')).json(); assert.equal(source.correctedAvailable, true); assert.equal(source.selectedVersion, 'original'); assert.equal(source.segments[0].text, 'gloomit');
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});

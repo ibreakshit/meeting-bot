@@ -6,7 +6,7 @@ import type { TranscriptionConfig } from './config';
 
 export interface RawTranscriptArtifacts {
   json: string; display: string; txt: string; srt: string; vtt: string; diarization: string;
-  language: string; warnings: string[];
+  runtime?: string; language: string; warnings: string[];
 }
 interface RunnerInput { audioPath: string; outputDirectory: string; signal: AbortSignal }
 async function runnerEnvironment(config: TranscriptionConfig): Promise<NodeJS.ProcessEnv> {
@@ -62,7 +62,7 @@ async function run(input: RunnerInput, args: string[], config: TranscriptionConf
     txt: join(input.outputDirectory, 'transcript.txt'), srt: join(input.outputDirectory, 'transcript.srt'), vtt: join(input.outputDirectory, 'transcript.vtt'),
     diarization: join(input.outputDirectory, 'diarization.json') };
   await Promise.all(Object.values(paths).map(path => access(path)));
-  return { ...paths, language: metadata.language, warnings: metadata.warnings };
+  return { ...paths, runtime: join(input.outputDirectory, 'result.json'), language: metadata.language, warnings: metadata.warnings };
 }
 export function runWhisperX(input: RunnerInput, config = loadTranscriptionConfig()): Promise<RawTranscriptArtifacts> {
   return run(input, ['transcribe'], config);

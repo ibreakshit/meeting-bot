@@ -57,7 +57,7 @@ for i = 1, count do
     local job = cjson.decode(raw)
     if eligible(job.source) then
       if job.attempt >= 3 then
-        if job.original then job.correctionState = 'failed' else job.originalState = 'failed' end
+        if job.original then job.correctionState = 'failed' else job.originalState = 'failed'; job.correctionState = 'skipped' end
         job.error = 'Transcription attempt limit reached after worker interruption'
         redis.call('HSET', KEYS[1], id, cjson.encode(job))
       elseif job.nextAttemptAt and job.nextAttemptAt > now then redis.call('RPUSH', KEYS[2], id)
@@ -123,7 +123,7 @@ export class TranscriptQueue {
   }
   async fail(jobId: string, token: string, stage: 'original' | 'correction', error: string): Promise<void> {
     // Browser-facing errors are deliberately supplied as safe stage summaries.
-    await this.finish(jobId, token, { [stage === 'original' ? 'originalState' : 'correctionState']: 'failed', error });
+    await this.finish(jobId, token, { [stage === 'original' ? 'originalState' : 'correctionState']: 'failed', ...(stage === 'original' ? { correctionState: 'skipped' as const } : {}), error });
   }
   async retryCorrection(jobId: string): Promise<boolean> {
     return Boolean(await this.run(COMMON + `
@@ -147,6 +147,9 @@ return true
     // Redis cjson encodes empty Lua tables as objects.
     if (!Array.isArray(job.revisions)) job.revisions = [] as ArtifactManifest[];
     if (!Array.isArray(job.warnings)) job.warnings = [];
+    for (const artifact of [job.original, job.latestCorrection, ...job.revisions]) {
+      if (artifact && !Array.isArray(artifact.warnings)) artifact.warnings = [];
+    }
     return job;
   }
 }

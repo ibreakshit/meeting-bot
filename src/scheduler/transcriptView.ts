@@ -113,6 +113,13 @@ document.addEventListener('click', event => {
 versions.forEach(button => button.addEventListener('click', () => { desired = button.dataset.transcriptVersion; load(); }));
 document.getElementById('transcript-close').addEventListener('click', () => drawer.close());
 drawer.addEventListener('click', event => { if (event.target === drawer) { const rect = drawer.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) drawer.close(); } });
+drawer.addEventListener('keydown', event => {
+  if (event.key !== 'Tab') return;
+  const focusable = [...drawer.querySelectorAll('button:not(:disabled),a[href],[tabindex=\"0\"]')].filter(element => element.getClientRects().length);
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
 drawer.addEventListener('close', () => { ++sequence; if(request) request.abort(); clearTimeout(timer); clearTooltip(); origin?.focus({preventScroll:true}); window.scrollTo(0,scrollPosition); });
 })();`;
 }

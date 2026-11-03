@@ -106,3 +106,8 @@ test('repeated worker death cannot reset the persisted three-attempt limit', asy
   assert.equal(await queue.claim('fourth'), null);
   assert.equal((await queue.get(transcriptJobId(source)))?.originalState, 'failed');
 });
+test('published artifact warning arrays survive Redis JSON serialization', async () => {
+  await ledger.addRecording(payload); const claim = await queue.claim('worker'); assert.ok(claim);
+  await queue.publish(claim.jobId, claim.token, { original: { revisionId: 'r', sourceHash: 'hash', warnings: [], keys: {}, hashes: {} } as never });
+  assert.deepEqual((await queue.get(claim.jobId))?.original?.warnings, []);
+});

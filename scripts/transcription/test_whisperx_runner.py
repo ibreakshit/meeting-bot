@@ -83,3 +83,36 @@ class RealignmentTests(unittest.TestCase):
             realign('audio', root / 'segments.json', root / 'saved.json', root / 'out', engine)
             word = json.loads((root / 'out/transcript.json').read_text())['word_segments'][0]
             self.assertNotIn('start', word)
+
+
+class DiagnosticTests(unittest.TestCase):
+    def test_printed_and_logged_cpu_fallback_are_retained(self):
+        import logging
+        engine = RunnerTests().engine()
+        def align(result, audio):
+            print('GPU FALLBACK WARNING: forced alignment using CPU backend')
+            logging.getLogger('whisperx').warning('GPU FALLBACK WARNING: speech activity using CPU backend')
+            return result
+        engine.align.side_effect = align
+        with tempfile.TemporaryDirectory() as directory:
+            transcribe('audio.wav', directory, engine)
+            result = json.loads((Path(directory) / 'result.json').read_text())
+            self.assertTrue(any('forced alignment' in item for item in result['warnings']))
+            self.assertTrue(any('speech activity' in item for item in result['warnings']))
+
+
+class SpeakerTests(unittest.TestCase):
+    def test_corrected_display_uses_fresh_speaker_labels(self):
+        from whisperx_runner import realign
+        engine = RunnerTests().engine()
+        engine.align.side_effect = lambda result, audio: {'segments': [{'text': 'Google Meet', 'start': 0, 'end': 1,
+            'speaker': 'SPEAKER_01', 'words': [{'word': 'Google', 'start': 0, 'end': .5, 'speaker': 'SPEAKER_00'},
+                                           {'word': 'Meet', 'start': .5, 'end': 1, 'speaker': 'SPEAKER_01'}]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'segments.json').write_text(json.dumps({'language': 'en', 'segments': [{'id': 's', 'start': 0, 'end': 1, 'text': 'Google Meet', 'speaker': 'SPEAKER_99'}]}))
+            (root / 'saved.json').write_text('[]')
+            realign('audio', root / 'segments.json', root / 'saved.json', root / 'out', engine)
+            display = json.loads((root / 'out/display.json').read_text())['segments'][0]
+            self.assertEqual(display['speaker'], 'SPEAKER_00 / SPEAKER_01')
+            self.assertEqual(display['id'], 's')

@@ -28,3 +28,15 @@ test('numerical and negation changes are unresolved', () => {
     const result = apply([{ ...patch, replacement }]); assert.equal(result.applied.length, 0); assert.equal(result.unresolved.length, 1);
   }
 });
+test('preserves contracted English and Korean negation and rejects sentence removal', () => {
+  for (const [text, replacement] of [['I didn\'t agree.', 'I did agree.'], ['I haven’t agreed.', 'I have agreed.'], ['동의하지 않았어요.', '동의했어요.'], ['Hello. Delete this sentence.', 'Hello.']]) {
+    const source: OriginalTranscript = { sourceHash: 'hash', language: 'en', segments: [{ id: 's', text, words: [] }] };
+    const result = validateAndApplyCorrections(source, [{ sourceHash: 'hash', unresolved: [], patches: [{ id: 'p', segmentId: 's', start: 0, end: Array.from(text).length, original: text, replacement, evidence: [{ segmentId: 's', quote: text }] }] }]);
+    assert.equal(result.applied.length, 0, text);
+  }
+});
+test('spelled-out numerical content is preserved', () => {
+  const text = 'twenty';
+  const result = validateAndApplyCorrections({ sourceHash: 'hash', language: 'en', segments: [{ id: 's', text, words: [] }] }, [{ sourceHash: 'hash', unresolved: [], patches: [{ id: 'p', segmentId: 's', start: 0, end: 6, original: text, replacement: 'thirty', evidence: [{ segmentId: 's', quote: text }] }] }]);
+  assert.equal(result.applied.length, 0);
+});

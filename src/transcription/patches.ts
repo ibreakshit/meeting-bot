@@ -1,7 +1,9 @@
 import type { AppliedCorrection, CorrectionPatch, CorrectionProposal, CorrectionResult, OriginalTranscript } from './types';
 
 const points = (text: string) => Array.from(text);
-const protectedContent = (text: string) => text.match(/\p{N}+(?:[.,:]\p{N}+)*|\b(?:no|not|never|cannot|can't|won't|don't|doesn't|isn't|wasn't|without)\b|않|없|못|안(?=\s)/giu) || [];
+// Protect digits plus explicit English and Korean number words. Other language
+// semantics still require the model-quality acceptance gate.
+const protectedContent = (text: string) => text.match(/\p{N}+(?:[.,:]\p{N}+)*|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|no|not|never|cannot|[a-z]+n['’]t|without)\b|하나|둘|셋|넷|다섯|여섯|일곱|여덟|아홉|열|않\p{L}*|없\p{L}*|못\p{L}*|안(?=\s)/giu) || [];
 export function validateAndApplyCorrections(original: OriginalTranscript, proposals: CorrectionProposal[]): CorrectionResult {
   const result: CorrectionResult = { segments: structuredClone(original.segments), applied: [], rejected: [], unresolved: [] };
   const segments = new Map(original.segments.map(segment => [segment.id, segment]));
@@ -22,7 +24,8 @@ export function validateAndApplyCorrections(original: OriginalTranscript, propos
       else if (ids.has(patch.id)) reason = 'Duplicate patch ID';
       if (reason) { result.rejected.push({ patch, reason }); continue; }
       ids.add(patch.id);
-      if (JSON.stringify(protectedContent(patch.original)) !== JSON.stringify(protectedContent(patch.replacement))) {
+      const removedSentence = (patch.original.match(/[.!?。！？]/gu) || []).length > (patch.replacement.match(/[.!?。！？]/gu) || []).length;
+      if (removedSentence || JSON.stringify(protectedContent(patch.original)) !== JSON.stringify(protectedContent(patch.replacement))) {
         result.unresolved.push({ segmentId: patch.segmentId, start: patch.start, end: patch.end, reason: 'Numerical or negation change requires review' }); continue;
       }
       candidates.push(patch);

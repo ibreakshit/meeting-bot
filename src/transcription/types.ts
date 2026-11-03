@@ -13,7 +13,8 @@ export interface UnresolvedSpan { segmentId: string; start: number; end: number;
 export type TranscriptVersion = 'original' | 'corrected';
 export type TranscriptFormat = 'json' | 'txt' | 'srt' | 'vtt';
 export interface ArtifactManifest {
-  revisionId: string; sourceHash: string; keys: Record<TranscriptFormat | 'display' | 'diarization', string>;
+  warnings?: string[];
+  revisionId: string; sourceHash: string; keys: Record<TranscriptFormat | 'display' | 'diarization', string> & { runtime?: string; audit?: string };
   hashes: Record<string, string>;
 }
 export interface TranscriptManifest extends TranscriptJob {

@@ -16,7 +16,7 @@ import { loadTranscriptionConfig } from './config';
 import type { RawTranscriptArtifacts } from './whisperx';
 
 const docker = (...args: string[]) => execFileSync('docker', args, { encoding: 'utf8', timeout: 30000 }).trim();
-test('duplicate completion, correction failure and retry preserve the published original and earlier revisions', { timeout: 30000 }, async () => {
+for (const retainWarning of [false, true]) test(`duplicate completion and correction retries preserve originals (warnings: ${retainWarning})`, { timeout: 30000 }, async () => {
   const container = `transcript-integration-${randomUUID()}`;
   let created = false;
   const objects = new Map<string, Buffer>([['/private/recording.webm', Buffer.from('fixture audio')]]);
@@ -57,7 +57,7 @@ test('duplicate completion, correction failure and retry preserve the published 
         return { ...paths, language: 'en', warnings: [] };
       }
       const dependencies = { queue, storage, config: { ...loadTranscriptionConfig(), correctionEnabled: true }, countTokens: async () => 100,
-        whisperx: async (input: { outputDirectory: string }) => { rawRuns++; return artifacts(input.outputDirectory, 'gloomit'); },
+        whisperx: async (input: { outputDirectory: string }) => { rawRuns++; return { ...await artifacts(input.outputDirectory, 'gloomit'), warnings: retainWarning ? ['GPU FALLBACK WARNING: fixture CPU backend'] : [] }; },
         realign: async (input: { outputDirectory: string; correctedSegmentsPath: string }) => { alignRuns++; const display = JSON.parse(await readFile(input.correctedSegmentsPath, 'utf8')); return artifacts(input.outputDirectory, display.segments[0].text, display.corrections); },
         correction: async () => { const published = await queue.get(claim.jobId); assert.equal(published?.originalState, 'ready'); throw new Error('Gemma disabled for fixture'); }
       };
@@ -69,6 +69,8 @@ test('duplicate completion, correction failure and retry preserve the published 
       await processTranscriptJob(retry, { ...dependencies, correction: async chunk => ({ sourceHash: chunk.sourceHash, patches: [{ id: 'p', segmentId: 's1', start: 0, end: 7, original: 'gloomit', replacement: 'Google Meet', evidence: [{ segmentId: 's1', quote: 'gloomit' }] }], unresolved: [], owned: chunk.owned }) });
       const success = await queue.get(claim.jobId); assert.ok(success?.latestCorrection); assert.equal(success.correctionState, 'ready');
       assert.equal(rawRuns, 1); assert.equal(alignRuns, 1); assert.equal(success.revisions.length, 1);
+      if (retainWarning) assert.ok(success.warnings.some(warning => warning.includes('GPU FALLBACK WARNING')));
+      else assert.deepEqual(success.warnings, []);
       assert.deepEqual(await storage.readArtifact(first.original, 'json'), originalBytes);
       const corrected = JSON.parse((await storage.readArtifact(success.latestCorrection, 'display')).toString()); assert.equal(corrected.segments[0].text, 'Google Meet');
       await queue.retryCorrection(claim.jobId); const failedRetry = await queue.claim('failed-retry'); assert.ok(failedRetry);

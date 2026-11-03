@@ -23,3 +23,25 @@ test('recording download pins ETag and hashes streamed content', async () => {
     await assert.rejects(storage.downloadRecording({ botId: 'b', recordingId: 'r', bucket: 'foreign', key: 'x' }, join(directory, 'x'), new AbortController().signal), /bucket/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+test('artifact reads pass cancellation to storage and abort stalled streams', async () => {
+  const abort = new AbortController(); let passedSignal: AbortSignal | undefined;
+  const body = new Readable({ read() { /* Fixture intentionally waits for cancellation. */ } });
+  const client = { send: async (_command: unknown, options?: { abortSignal?: AbortSignal }) => { passedSignal = options?.abortSignal; return { Body: body }; } } as unknown as S3Client;
+  const storage = new TranscriptStorage(client, 'private');
+  const reading = storage.readArtifact({ keys: { json: 'meeting-bot/transcripts/fixture/json' }, hashes: { json: 'hash' } } as never, 'json', 1024, abort.signal);
+  await new Promise(resolve => setImmediate(resolve)); abort.abort();
+  await assert.rejects(reading, /cancel/); assert.equal(passedSignal, abort.signal); assert.equal(body.destroyed, true);
+});
+test('artifact uploads forward cancellation to a stalled storage request', { timeout: 2000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'transcript-upload-'));
+  const abort = new AbortController();
+  const client = { send: async (_command: unknown, options?: { abortSignal?: AbortSignal }) => {
+    assert.equal(options?.abortSignal, abort.signal);
+    abort.abort(); options?.abortSignal?.throwIfAborted();
+  } } as unknown as S3Client;
+  try {
+    const path = join(directory, 'artifact'); const { writeFile } = await import('node:fs/promises'); await writeFile(path, '{}');
+    const storage = new TranscriptStorage(client, 'private');
+    await assert.rejects(storage.uploadArtifacts('a'.repeat(64), 'revision', { json: path, display: path, txt: path, srt: path, vtt: path, diarization: path, language: 'en', warnings: [] }, 'original', undefined, undefined, abort.signal), { name: 'AbortError' });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

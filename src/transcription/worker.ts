@@ -22,6 +22,8 @@ export async function processTranscriptJob(claim: ClaimedTranscriptJob, deps: Wo
   if (!await queue.renew(claim.jobId, claim.token)) return;
   const config = deps.config || loadTranscriptionConfig();
   const cancellation = new AbortController();
+  let timedOut = false;
+  const stageTimeout = setTimeout(() => { timedOut = true; cancellation.abort(); }, config.stageTimeoutMs);
   const signal = deps.signal ? AbortSignal.any([deps.signal, cancellation.signal]) : cancellation.signal;
   let renewing = false;
   const renewal = setInterval(() => {
@@ -41,18 +43,20 @@ export async function processTranscriptJob(claim: ClaimedTranscriptJob, deps: Wo
     if (manifest.latestCorrection && manifest.correctionState === 'ready') {
       await queue.finish(claim.jobId, claim.token); return;
     }
+    if (manifest.original) stage = 'correction';
     const audioPath = join(directory, 'recording');
     const fingerprint = await storage.downloadRecording(claim.source, audioPath, signal);
     if (manifest.fingerprint && manifest.fingerprint.sha256 !== fingerprint.sha256) throw new SourceConflictError('Recording content changed');
     let original;
-    if (manifest.original) original = await storage.restoreArtifacts(manifest.original, join(directory, 'original'));
+    if (manifest.original) original = await storage.restoreArtifacts(manifest.original, join(directory, 'original'), signal);
     else {
       await publish({ originalState: 'running' });
       original = await (deps.whisperx || runWhisperX)({ audioPath, outputDirectory: join(directory, 'original'), signal }, config);
-      const pointer = await storage.uploadArtifacts(claim.jobId, randomUUID(), original);
+      const pointer = await storage.uploadArtifacts(claim.jobId, randomUUID(), original, 'original', undefined, undefined, signal);
       await publish({ original: pointer, fingerprint, originalState: 'ready', warnings: original.warnings });
     }
     stage = 'correction';
+    stageTimeout.refresh();
     if (!config.correctionEnabled) {
       await queue.finish(claim.jobId, claim.token, { correctionState: 'skipped', warnings: [...original.warnings, 'Automatic correction awaits model quality validation.'] }); return;
     }
@@ -61,6 +65,7 @@ export async function processTranscriptJob(claim: ClaimedTranscriptJob, deps: Wo
     if (!manifest?.original) throw new Error('Published original unavailable');
     const display = JSON.parse(await readFile(original.display, 'utf8')) as Omit<OriginalTranscript, 'sourceHash'>;
     const source: OriginalTranscript = { ...display, sourceHash: manifest.original.sourceHash };
+    const correctionStartedAt = (deps.now || Date.now)();
     const chunks = await prepareCorrectionChunks(source, { contextTokens: 8192, completionTokens: 2048, safetyTokens: 512, countTokens: deps.countTokens || localTokenCounter(config.gemmaUrl, signal) });
     const proposals = [];
     for (const chunk of chunks) proposals.push(await (deps.correction || proposeCorrections)(chunk, signal, { baseUrl: config.gemmaUrl }));
@@ -68,22 +73,22 @@ export async function processTranscriptJob(claim: ClaimedTranscriptJob, deps: Wo
     const segmentsPath = join(directory, 'corrected-segments.json');
     await writeFile(segmentsPath, JSON.stringify({ language: source.language, segments: corrected.segments, corrections: corrected.applied }), { mode: 0o600 });
     const auditPath = join(directory, 'audit.json');
-    await writeFile(auditPath, JSON.stringify({ proposals, applied: corrected.applied, rejected: corrected.rejected, unresolved: corrected.unresolved,
+    await writeFile(auditPath, JSON.stringify({ requests: chunks.map(chunk => ({ messages: chunk.messages, tokenCount: chunk.tokenCount, owned: chunk.owned })), proposals, durationMs: (deps.now || Date.now)() - correctionStartedAt, applied: corrected.applied, rejected: corrected.rejected, unresolved: corrected.unresolved,
       settings: { model: 'gemma-4-e4b-it-q6', temperature: 0, reasoning: true, reasoningBudget: 512, completionTokens: 2048, promptVersion: 1 } }), { mode: 0o600 });
     let artifacts = original;
     if (corrected.applied.length) artifacts = await (deps.realign || realignTranscript)({ audioPath, correctedSegmentsPath: segmentsPath, diarizationPath: original.diarization, outputDirectory: join(directory, 'corrected'), signal }, config);
     else artifacts = { ...original, display: segmentsPath };
-    const revision = await storage.uploadArtifacts(claim.jobId, randomUUID(), artifacts, 'corrected', source.sourceHash, auditPath);
-    await publish({ latestCorrection: revision, correctionState: 'ready', warnings: artifacts.warnings });
+    const revision = await storage.uploadArtifacts(claim.jobId, randomUUID(), artifacts, 'corrected', source.sourceHash, auditPath, signal);
+    await publish({ latestCorrection: revision, correctionState: 'ready', warnings: [...new Set([...original.warnings, ...artifacts.warnings])] });
     await queue.finish(claim.jobId, claim.token);
   } catch (error) {
-    if (signal.aborted) return;
-    const transient = !(error instanceof SourceConflictError) && /ECONN|ENOTFOUND|ETIMEDOUT|fetch failed|service unavailable|SlowDown|503|502/.test(error instanceof Error ? error.message : '');
+    if (signal.aborted && !timedOut) return;
+    const transient = !(error instanceof SourceConflictError) && /ECONN|ENOTFOUND|ETIMEDOUT|fetch failed|service unavailable|SlowDown|503|502|timeout|timed out/i.test(error instanceof Error ? error.message : '');
     if (transient && claim.attempt < 3) {
       await queue.finish(claim.jobId, claim.token, { [stage === 'original' ? 'originalState' : 'correctionState']: stage === 'original' ? 'queued' : 'pending', nextAttemptAt: (deps.now || Date.now)() + (claim.attempt === 1 ? 5000 : 30000) });
     } else await queue.fail(claim.jobId, claim.token, stage, error instanceof SourceConflictError ? 'Recording source changed; transcript unavailable.' : stage === 'original' ? 'Transcription failed.' : 'Correction failed; original remains available.');
   } finally {
-    clearInterval(renewal); cancellation.abort();
+    clearTimeout(stageTimeout); clearInterval(renewal); cancellation.abort();
     await rm(directory, { recursive: true, force: true });
   }
 }

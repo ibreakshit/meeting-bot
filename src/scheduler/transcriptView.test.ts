@@ -33,3 +33,30 @@ test('drawer shows exact originals on focus, switches versions, restores focus a
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });
+
+test('pending polling preserves explicit Original selection, safe Korean wrapping and keyboard containment', { timeout: 15000 }, async () => {
+  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } }); let requests = 0;
+    const html = renderHistory([{ botId: 'b', payload: { eventId: '한국어 회의' }, pushedAt: Date.now(), scheduledStart: Date.now(), scheduledEnd: Date.now()+60000, state: 'completed', recording: { botId: 'b', recordingId: 'r', timestamp: new Date().toISOString() } } as never]);
+    await page.route('http://fixture.test/**', route => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/history') return route.fulfill({ contentType: 'text/html', body: html });
+      requests++; const ready = requests >= 3;
+      return route.fulfill({ json: { originalState: 'ready', correctionState: ready ? 'ready' : 'pending', correctedAvailable: ready,
+        selectedVersion: ready && url.searchParams.get('version') !== 'original' ? 'corrected' : 'original', selectedRevision: 'original', warnings: [],
+        segments: [{ id: 's', text: '한국어 English 😀 '.repeat(200), start: 0 }], corrections: [] } });
+    });
+    await page.goto('http://fixture.test/history'); await page.getByRole('button', { name: 'View transcript' }).click();
+    await page.getByText('Correction pending', { exact: false }).waitFor();
+    await page.getByRole('button', { name: 'Original', exact: true }).click();
+    await page.getByText('No corrections made', { exact: true }).waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: 'Corrected', exact: true }).waitFor();
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('[data-transcript-version="corrected"]')?.disabled);
+    assert.equal(await page.getByRole('button', { name: 'Original', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('.transcript-content').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+    for (let index = 0; index < 8; index++) { await page.keyboard.press('Tab'); assert.equal(await page.locator('#transcript-drawer').evaluate(element => element.contains(document.activeElement)), true); }
+    await page.getByRole('button', { name: 'Close transcript' }).click(); const closedRequests = requests;
+    assert.ok(closedRequests >= 3);
+  } finally { await browser.close(); }
+});
