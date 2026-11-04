@@ -47,3 +47,7 @@ Gemma remained healthy after the run; final host available memory was approximat
 These small tests do not establish reliable screen-based speaker naming. Remaining gaps include full-frame localization, correct indicator-to-tile association, hidden/truncated participant handling, Korean-name OCR, duplicate names, more real gallery layouts and synchronized diarized-turn validation. The real-call success also used a sidebar detail crop, so it is not evidence that an uncropped screenshot suffices. No automatic speaker map or annotation was published.
 
 Private frames, cropped reference/targets, controlled fixtures, prompts, final outputs, token usage, hashes, timing and comparison summaries are retained at `/tmp/meeting-bot-vision-2026-11-04/indicator-example/`. They are not committed. Cleanup belongs to the task operator after follow-up or acceptance.
+
+## Qwen comparison
+
+The [Qwen2.5-VL-3B Q6_K follow-up](2026-11-04-qwen-vl-validation.md) reused these fixtures and added separately labeled crop/format diagnostics. It did not pass the automatic speaker-naming gate.
