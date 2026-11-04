@@ -197,6 +197,7 @@ export function createSchedulerApp(deps: SchedulerWebDependencies) {
     dashboard.get('/recordings/:botId/transcript/download', guard, handlers.download);
   }
   dashboard.get('/recordings/:botId/download', guard, createRecordingDownloadHandler({ config, s3: deps.s3, getRecording: async botId => (await ledger.listDispatches()).find(record => record.botId === botId)?.recording }));
+  dashboard.get('/recordings/:botId/video', guard, createRecordingDownloadHandler({ config, s3: deps.s3, disposition: 'inline', getRecording: async botId => (await ledger.listDispatches()).find(record => record.botId === botId)?.recording }));
   dashboard.post('/auth/logout', guard, postGuard, (req, res) => { const base = origin(req); if (!base) return res.status(400).send('Unknown dashboard origin'); clearCookie(res, sessionCookieName, base); res.json({ success: true }); });
   dashboard.post('/groups/:id/override', guard, postGuard, express.json({ limit: '16kb' }), asyncRoute(async (req, res) => {
     if (!['join', 'skip', 'automatic'].includes(req.body?.mode)) return res.status(400).json({ error: 'Invalid override' });

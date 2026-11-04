@@ -12,13 +12,15 @@ async function fixture(run: (url: string, calls: StorageCall[]) => Promise<void>
     race?: boolean;
     stream?: () => Readable;
     recording?: StoredRecording & { blobUrl?: string };
+    disposition?: 'attachment' | 'inline';
+    contentType?: string;
 } = {}) {
     const calls: StorageCall[] = [];
     const bytes = Buffer.from('0123456789');
     let raced = false;
     const s3 = { send: async (command: GetObjectCommand | HeadObjectCommand, opts?: { abortSignal?: AbortSignal }) : Promise<RecordingStorageResponse> => { calls.push({ name: command.constructor.name, input: command.input, opts: opts ?? {} }); if (options.error)
             throw { $metadata: { httpStatusCode: options.error } }; if (command instanceof HeadObjectCommand)
-            return { ContentLength: 10, ContentType: 'video/mp4', ETag: raced ? '"v2"' : '"v1"', LastModified: new Date('2026-01-01T00:00:00Z') }; if (options.race && !raced) {
+            return { ContentLength: 10, ContentType: options.contentType || 'video/mp4', ETag: raced ? '"v2"' : '"v1"', LastModified: new Date('2026-01-01T00:00:00Z') }; if (options.race && !raced) {
             raced = true;
             throw { $metadata: { httpStatusCode: 412 } };
         } let body = bytes; if (command instanceof GetObjectCommand && command.input.Range) {
@@ -27,7 +29,7 @@ async function fixture(run: (url: string, calls: StorageCall[]) => Promise<void>
             body = bytes.subarray(Number(match[1]), Number(match[2]) + 1);
         } return { Body: options.stream?.() ?? Readable.from([body]), ContentLength: body.length, ETag: raced ? '"v2"' : '"v1"' }; } };
     const app = express();
-    const handler = createRecordingDownloadHandler({ config: { s3: { bucket: 'private', region: 'local', accessKeyId: 'test', secretAccessKey: 'test', forcePathStyle: true } }, getRecording: async () => options.recording ?? ({ botId: 'bot', recordingId: 'r', timestamp: 'now', storage: { provider: 's3', bucket: 'private', key: 'object.mp4' } }), s3 });
+    const handler = createRecordingDownloadHandler({ config: { s3: { bucket: 'private', region: 'local', accessKeyId: 'test', secretAccessKey: 'test', forcePathStyle: true } }, getRecording: async () => options.recording ?? ({ botId: 'bot', recordingId: 'r', timestamp: 'now', storage: { provider: 's3', bucket: 'private', key: 'object.mp4' } }), s3, disposition: options.disposition });
     app.get('/recordings/:botId/download', handler);
     const server = app.listen(0, '127.0.0.1');
     await new Promise<void>(r => server.once('listening', r));
@@ -62,6 +64,24 @@ test('If-Range mismatch ignores even an unsatisfiable range', async () => {
     assert.equal(response.status, 200);
     assert.equal(await response.text(), '0123456789');
   });
+});
+
+test('inline playback retains private streaming and range behavior without changing downloads', async () => {
+  await fixture(async url => {
+    const response = await fetch(url, { headers: { Range: 'bytes=2-4' } });
+    assert.equal(response.status, 206);
+    assert.match(response.headers.get('content-disposition') || '', /^inline; filename=/);
+    assert.equal(response.headers.get('content-range'), 'bytes 2-4/10');
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+    assert.equal(await response.text(), '234');
+  }, { disposition: 'inline' });
+});
+
+test('inline playback refuses executable content before reading a body', async () => {
+  await fixture(async (url, calls) => {
+    assert.equal((await fetch(url)).status, 415);
+    assert.equal(calls.filter(call => call.name === 'GetObjectCommand').length, 0);
+  }, { disposition: 'inline', contentType: 'text/html' });
 });
 
 test('upstream errors are sanitized before bytes and interrupt a response after bytes', async () => {
