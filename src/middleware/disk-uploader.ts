@@ -17,6 +17,7 @@ import { getStorageProvider } from '../uploader/providers/factory';
 import { getTimeString } from '../lib/datetime';
 import { notifyRecordingCompleted, RecordingCompletedPayload } from '../services/notificationService';
 import { writeWebmDurationMetadata } from '../lib/webmDuration';
+import { compressRecording } from '../lib/compressRecording';
 
 console.log(' ----- PWD OR CWD ----- ', process.cwd());
 
@@ -82,6 +83,7 @@ class DiskUploader implements IUploader {
   private lastStorageDetails?: Record<string, any>;
   private recordingDuration?: number;
   private firstChunkReceivedAt?: number;
+  private compressedFilePath?: string;
 
   private queue: Buffer[];
   private writing: boolean;
@@ -352,7 +354,7 @@ class DiskUploader implements IUploader {
   }
 
   private async processRecordingUpload() {
-    const filePath = DiskUploader.getFilePath(this._userId, this._tempFileId, this.fileExtension);
+    const filePath = this.getUploadFilePath();
     const chunkSize = this.UPLOAD_CHUNK_SIZE;
 
     await this.connect();
@@ -434,14 +436,19 @@ class DiskUploader implements IUploader {
   }
 
   private async deleteTempFileAsync(): Promise<void> {
-    try {
-      const filePath = DiskUploader.getFilePath(this._userId, this._tempFileId, this.fileExtension);
-      const absPath = path.resolve(filePath);
-      await fs.promises.unlink(absPath);
-      this._logger.info(`Temp File deleted from disk: ${absPath}`, this._userId);
-    } catch (error) {
-      this._logger.warn('Could not clean up temp file:', this._userId, error);
+    const originalPath = DiskUploader.getFilePath(this._userId, this._tempFileId, this.fileExtension);
+    for (const filePath of [originalPath, ...(this.compressedFilePath ? [this.compressedFilePath] : [])]) {
+      try {
+        await fs.promises.unlink(filePath);
+        this._logger.info(`Temp File deleted from disk: ${path.resolve(filePath)}`, this._userId);
+      } catch (error) {
+        this._logger.warn('Could not clean up temp file:', this._userId, error);
+      }
     }
+  }
+
+  private getUploadFilePath(): string {
+    return this.compressedFilePath || DiskUploader.getFilePath(this._userId, this._tempFileId, this.fileExtension);
   }
 
   private async tempFileExists(): Promise<boolean> {
@@ -519,7 +526,11 @@ class DiskUploader implements IUploader {
   }
 
   private async ensureWebmDurationMetadata(filePath: string): Promise<void> {
-    if (this.fileExtension !== '.webm') return;
+    // Chrome can fall back to streaming WebM even when MP4 was requested.
+    // Supply duration before compression, based on the container rather than its suffix.
+    if (this.fileExtension !== '.webm') {
+      if (this.fileExtension !== '.mp4' || await this.isMp4File(filePath)) return;
+    }
 
     if (!this.recordingDuration) {
       this._logger.warn('Skipping WebM duration metadata patch because recording duration is unknown.', { filePath });
@@ -571,7 +582,6 @@ class DiskUploader implements IUploader {
       }
 
       const filePath = DiskUploader.getFilePath(this._userId, this._tempFileId, this.fileExtension);
-      await this.ensureRequestedContainer(filePath);
 
       if (!this.recordingDuration && this.firstChunkReceivedAt) {
         const elapsedSeconds = Math.round((Date.now() - this.firstChunkReceivedAt) / 1000);
@@ -587,7 +597,13 @@ class DiskUploader implements IUploader {
 
       await this.ensureWebmDurationMetadata(filePath);
 
-      const probedDuration = await this.getMediaDuration(filePath);
+      if (!this.compressedFilePath) {
+        this.compressedFilePath = await compressRecording(filePath, this._logger);
+        if (this.compressedFilePath) this.contentType = 'video/mp4';
+        else await this.ensureRequestedContainer(filePath);
+      }
+
+      const probedDuration = await this.getMediaDuration(this.getUploadFilePath());
       if (typeof probedDuration === 'number') {
         this.recordingDuration = probedDuration;
       }
@@ -630,12 +646,12 @@ class DiskUploader implements IUploader {
     const provider = getStorageProvider();
     this._logger.info(`Uploading recording to object storage using provider: ${provider.name}...`);
 
-    const filePath = DiskUploader.getFilePath(this._userId, this._tempFileId, this.fileExtension);
+    const filePath = this.getUploadFilePath();
     const chunkSize = this.UPLOAD_CHUNK_SIZE;
 
     // Compose key to preserve existing S3 layout for parity
     const fileName = fileNameTemplate(this._namePrefix, getTimeString(this._timezone, this._logger));
-    const key = `meeting-bot/${this._userId}/${fileName}${this.fileExtension}`;
+    const key = `meeting-bot/${this._userId}/${fileName}${this.compressedFilePath ? '.mp4' : this.fileExtension}`;
 
     // Validate provider configuration before attempting upload
     provider.validateConfig();
@@ -789,11 +805,9 @@ class DiskUploader implements IUploader {
         throw new Error(`Unsupported UPLOADER_TYPE configuration: ${config.uploaderType}`);
       }
 
-      // Delete temp file after the upload is finished
-      await this.deleteTempFileAsync();
-
       // Send optional notifications on success
       if (uploadResult) {
+        await this.deleteTempFileAsync();
         try {
           const payload: RecordingCompletedPayload = {
             recordingId: this.lastRecordingId ?? this._tempFileId,

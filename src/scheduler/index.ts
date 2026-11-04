@@ -1,3 +1,6 @@
+import { S3Client } from '@aws-sdk/client-s3';
+import { TranscriptQueue } from '../transcription/queue';
+import { TranscriptStorage } from '../transcription/storage';
 import 'dotenv/config';
 import { createClient } from 'redis';
 import { loadConfig } from './config';
@@ -33,7 +36,10 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       });
     });
     const runtime = new SchedulerRuntime(config, store, ledger, google);
-    const app = createSchedulerApp({ config, crypto, store, google, ledger, runtime });
+    const transcriptQueue = new TranscriptQueue(client, config.queueName, config.s3.bucket);
+    const transcriptStorage = new TranscriptStorage(new S3Client({ region: config.s3.region, endpoint: config.s3.endpoint,
+      forcePathStyle: config.s3.forcePathStyle, credentials: { accessKeyId: config.s3.accessKeyId, secretAccessKey: config.s3.secretAccessKey } }), config.s3.bucket);
+    const app = createSchedulerApp({ config, crypto, store, google, ledger, runtime, transcriptQueue, transcriptStorage });
     const server = app.listen(config.port, '0.0.0.0');
     let shuttingDown = false;
     const shutdown = async () => {

@@ -1,3 +1,6 @@
+import { createTranscriptHandlers } from './transcripts';
+import type { TranscriptQueue } from '../transcription/queue';
+import type { TranscriptStorage } from '../transcription/storage';
 import express, { ErrorRequestHandler, Request, RequestHandler, Response } from 'express';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -21,6 +24,8 @@ export interface SchedulerWebDependencies {
   google: { authorizationUrl(flow: 'login' | 'connect', redirectUri: string, state: string): string; completeOAuth(code: string, redirectUri: string): Promise<OAuthIdentity>; listCalendars(account: Account): Promise<CalendarListEntry[]>; revokeAccount(account: Account): Promise<void> };
   crypto: CookieCrypto;
   runtime: { view(): RuntimeView; tick(): Promise<void>; invite(request: ManualInvitation): Promise<DispatchRecord> };
+  transcriptQueue?: Pick<TranscriptQueue, 'get'>;
+  transcriptStorage?: Pick<TranscriptStorage, 'readArtifact'>;
   s3?: RecordingStorageClient;
   thumbnails?: Pick<BotThumbnailStore, 'save' | 'read'>;
 }
@@ -185,7 +190,14 @@ export function createSchedulerApp(deps: SchedulerWebDependencies) {
     await runtime.tick();
     res.json({ success: true });
   }));
+  if (deps.transcriptQueue && deps.transcriptStorage) {
+    const handlers = createTranscriptHandlers({ bucket: config.s3.bucket, transcriptQueue: deps.transcriptQueue, transcriptStorage: deps.transcriptStorage,
+      getRecording: async botId => (await ledger.listDispatches()).find(record => record.botId === botId)?.recording });
+    dashboard.get('/recordings/:botId/transcript', guard, handlers.view);
+    dashboard.get('/recordings/:botId/transcript/download', guard, handlers.download);
+  }
   dashboard.get('/recordings/:botId/download', guard, createRecordingDownloadHandler({ config, s3: deps.s3, getRecording: async botId => (await ledger.listDispatches()).find(record => record.botId === botId)?.recording }));
+  dashboard.get('/recordings/:botId/video', guard, createRecordingDownloadHandler({ config, s3: deps.s3, disposition: 'inline', getRecording: async botId => (await ledger.listDispatches()).find(record => record.botId === botId)?.recording }));
   dashboard.post('/auth/logout', guard, postGuard, (req, res) => { const base = origin(req); if (!base) return res.status(400).send('Unknown dashboard origin'); clearCookie(res, sessionCookieName, base); res.json({ success: true }); });
   dashboard.post('/groups/:id/override', guard, postGuard, express.json({ limit: '16kb' }), asyncRoute(async (req, res) => {
     if (!['join', 'skip', 'automatic'].includes(req.body?.mode)) return res.status(400).json({ error: 'Invalid override' });

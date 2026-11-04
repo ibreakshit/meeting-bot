@@ -222,7 +222,7 @@ test('dashboard subpath keeps navigation, controls and recording downloads insid
       assert.ok(localUrls.every(value => value.startsWith('/meeting-bot/')), JSON.stringify(localUrls));
       assert.ok(html.includes('fetch("/meeting-bot/calendars/watch"'));
       assert.ok(html.includes('location.assign("/meeting-bot/")'));
-      if (path.endsWith('/history')) assert.ok(html.includes('href="/meeting-bot/recordings/b/download"'));
+      if (path.endsWith('/history')) assert.ok(html.includes('data-meeting-bot="b"') && html.includes('View meeting'));
       if (path === '/meeting-bot/') assert.ok(html.includes('data-url="/meeting-bot/groups/g/override"'));
       if (path.endsWith('/accounts')) assert.ok(html.includes('data-url="/meeting-bot/accounts/a/disconnect"'));
     }
@@ -300,6 +300,9 @@ test('dashboard and downloads require an allowlisted session; hostile Host rejec
         assert.equal((await fetch(u + '/recordings/b/download', { headers: host })).status, 401);
         assert.equal((await fetch(u + '/recordings/b/download', { method: 'HEAD', headers: host })).status, 401);
         assert.equal((await fetch(u + '/recordings/b/download', { method: 'HEAD', headers: { ...host, Cookie: cookie(f, 'stranger@example.com') } })).status, 403);
+        assert.equal((await fetch(u + '/recordings/b/video', { headers: host })).status, 401);
+        assert.equal((await fetch(u + '/recordings/b/video', { method: 'HEAD', headers: host })).status, 401);
+        assert.equal((await fetch(u + '/recordings/b/video', { headers: { ...host, Cookie: cookie(f, 'stranger@example.com') } })).status, 403);
         assert.equal(storageCalls, 0);
         assert.equal((await fetch(u + '/', { headers: { ...host, Cookie: cookie(f, 'stranger@example.com') } })).status, 403);
         assert.equal((await fetch(u + '/auth/login', { headers: { Host: 'evil.example' }, redirect: 'manual' })).status, 400);
@@ -508,4 +511,128 @@ test('Bot Settings preserves saved settings when image processing or durable per
     assert.equal((await fetch(url + '/bot-settings', { method: 'POST', headers, body: JSON.stringify({ name: 'Replacement' }) })).status, 503);
     assert.equal(f.state.botSettings?.name, 'Original');
   });
+});
+
+test('mounted transcript routes use existing owner authentication before reading private artifacts', async () => {
+  const f = fixture(); f.deps.config.basePath = '/scheduler'; let reads = 0;
+  f.deps.transcriptQueue = { get: async () => { reads++; return null; } };
+  f.deps.transcriptStorage = { readArtifact: async () => { throw new Error('must not read'); } };
+  await server(f, async url => {
+    const unauthenticated = await fetch(url + '/scheduler/recordings/b/transcript', { headers: host });
+    assert.equal(unauthenticated.status, 401); assert.equal(reads, 0);
+    const authorizedCookie = `scheduler_session_${Buffer.from('/scheduler').toString('base64url')}=${f.deps.crypto.signCookie({ email: 'owner@example.com' }, 3600)}`;
+    assert.equal((await fetch(url + '/scheduler/recordings/b/transcript?version=bad', { headers: { ...host, Cookie: authorizedCookie } })).status, 400);
+    assert.equal((await fetch(url + '/scheduler/recordings/b/transcript/download?format=html', { headers: { ...host, Cookie: authorizedCookie } })).status, 400);
+  });
+});
+
+test('meeting drawer plays and seeks authenticated video without resetting for transcript changes', { timeout: 30000 }, async () => {
+  const { chromium } = await import('playwright');
+  const { Readable } = await import('node:stream');
+  const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+  const { mkdtemp, readFile, writeFile, unlink } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { writeWebmDurationMetadata } = await import('../lib/webmDuration');
+  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+  const directory = await mkdtemp(join(tmpdir(), 'meeting-drawer-qa-'));
+  const fixturePath = join(directory, 'recording.webm');
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    const chunks = await page.evaluate(async () => {
+      const canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
+      const context = canvas.getContext('2d'); if (!context) throw Error('Canvas unavailable');
+      let frame = 0;
+      const draw = () => {
+        context.fillStyle = '#18344a'; context.fillRect(0, 0, 1280, 720);
+        context.fillStyle = '#e8f2ed'; context.font = '36px sans-serif'; context.fillText('Weekly product review', 80, 180);
+        context.font = '24px sans-serif'; context.fillText('Meeting playback fixture', 80, 235);
+        context.fillStyle = '#8bbdaa'; context.fillRect(80 + frame++ * 8, 330, 160, 120);
+      };
+      draw(); const timer = setInterval(draw, 100);
+      const stream = canvas.captureStream(10);
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = event => chunks.push(event.data);
+      const stopped = new Promise<void>(resolve => { recorder.onstop = () => resolve(); });
+      recorder.start(); await new Promise(resolve => setTimeout(resolve, 4000)); recorder.stop(); await stopped;
+      clearInterval(timer); stream.getTracks().forEach(track => track.stop());
+      return Array.from(new Uint8Array(await new Blob(chunks).arrayBuffer()));
+    });
+    await writeFile(fixturePath, Buffer.from(chunks)); await writeWebmDurationMetadata(fixturePath, 4);
+    const videoBytes = await readFile(fixturePath);
+    const f = fixture(); f.deps.config.basePath = '/meeting-bot';
+    const dispatch = dispatchRecord({ recording: { botId: 'b', recordingId: 'r', timestamp: 'now', contentType: 'video/webm', storage: { provider: 's3', bucket: 'private', key: 'recording.webm' } } });
+    dispatch.payload.eventId = 'Weekly product review';
+    Object.assign(dispatch, { meetingTitle: 'Weekly product review' });
+    f.deps.ledger.listDispatches = async () => [dispatch]; f.deps.ledger.history = f.deps.ledger.listDispatches;
+    let videoReads = 0; let transcriptAvailable = true;
+    f.deps.s3 = { send: async command => {
+      if (!(command instanceof GetObjectCommand)) return { ContentLength: videoBytes.length, ContentType: 'video/webm', ETag: '"media"' };
+      videoReads++;
+      const range = command.input.Range?.match(/^bytes=(\d+)-(\d+)$/);
+      const body = range ? videoBytes.subarray(Number(range[1]), Number(range[2]) + 1) : videoBytes;
+      return { ContentLength: body.length, ETag: '"media"', Body: Readable.from([body]) };
+    } };
+    f.deps.transcriptQueue = { get: async () => transcriptAvailable ? {
+      originalState: 'ready', correctionState: 'ready', original: { revisionId: 'original' }, latestCorrection: { revisionId: 'corrected' }, warnings: []
+    } as never : null };
+    f.deps.transcriptStorage = { readArtifact: async artifact => Buffer.from(JSON.stringify({
+      segments: Array.from({ length: 6 }, (_, index) => ({ id: 's' + index, start: index * 15, speaker: 'SPEAKER_00', words: [], text: index === 0 ? (artifact.revisionId === 'original' ? 'gloomit' : 'Google Meet') + ' connects the team for our weekly review.' : 'We reviewed the release, discussed customer feedback, and agreed on the next steps.' })),
+      corrections: artifact.revisionId === 'original' ? [] : [{ original: 'gloomit', replacement: 'Google Meet', correctedRange: { segmentId: 's0', start: 0, end: 11 } }]
+    })) };
+    const errors: string[] = []; const consoleErrors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+    await server(f, async origin => {
+      f.deps.config.baseUrls = [origin];
+      const [name, value] = cookie(f).split('=');
+      await page.context().addCookies([{ name, value, url: origin + '/meeting-bot/', httpOnly: true, sameSite: 'Lax' }]);
+      await page.goto(origin + '/meeting-bot/history');
+      assert.equal(await page.title(), 'History - Meeting scheduler'); assert.equal(videoReads, 0);
+      const open = page.getByRole('button', { name: 'View meeting' }); await open.click();
+      const player = page.locator('#meeting-video');
+      await player.evaluate((video: HTMLVideoElement) => video.play());
+      await page.waitForFunction(() => (document.getElementById('meeting-video') as HTMLVideoElement).currentTime > 0.1);
+      assert.deepEqual(await player.evaluate((video: HTMLVideoElement) => [video.videoWidth, video.videoHeight]), [1280, 720]);
+      await player.evaluate((video: HTMLVideoElement) => { video.pause(); video.currentTime = 1.2; });
+      await page.waitForFunction(() => {
+        const video = document.getElementById('meeting-video') as HTMLVideoElement;
+        return !video.seeking && video.readyState >= 2 && Math.abs(video.currentTime - 1.2) < 0.1;
+      });
+      await player.evaluate((video: HTMLVideoElement) => video.play());
+      const url = await player.getAttribute('src');
+      await page.getByRole('button', { name: 'Original', exact: true }).click();
+      await page.getByText('gloomit connects the team for our weekly review.', { exact: true }).waitFor();
+      assert.equal(await player.getAttribute('src'), url);
+      assert.ok(await player.evaluate((video: HTMLVideoElement) => video.currentTime >= 1.1));
+      assert.equal(await player.evaluate((video: HTMLVideoElement) => video.paused), false);
+      await page.getByRole('button', { name: 'Corrected', exact: true }).click(); await page.locator('.transcript-change').waitFor();
+      await player.evaluate((video: HTMLVideoElement) => video.pause());
+      const partial = await page.request.get(origin + url, { headers: { Range: 'bytes=10-20' } });
+      assert.equal(partial.status(), 206); assert.equal((await partial.body()).length, 11);
+      const dialog = page.getByRole('dialog', { name: 'Weekly product review' });
+      const bounds = await dialog.boundingBox(); assert.ok(bounds); assert.equal(Math.round(bounds.width), 864);
+      const videoBounds = await player.boundingBox(); const transcriptBounds = await page.getByRole('heading', { name: 'Transcript', exact: true }).boundingBox();
+      assert.ok(videoBounds && transcriptBounds && videoBounds.y + videoBounds.height <= transcriptBounds.y);
+      await page.locator('.meeting-body').evaluate(element => { element.scrollTop = 0; });
+      await page.screenshot({ path: join(directory, 'desktop.png') });
+      await page.setViewportSize({ width: 390, height: 844 });
+      const mobileBounds = await dialog.boundingBox(); assert.ok(mobileBounds); assert.equal(Math.round(mobileBounds.width), 390);
+      assert.equal(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+      await page.screenshot({ path: join(directory, 'mobile.png') });
+      assert.deepEqual(consoleErrors, []);
+      await page.keyboard.press('Escape');
+      await dialog.waitFor({ state: 'hidden' });
+      await page.waitForFunction(() => !document.getElementById('meeting-video')?.getAttribute('src'));
+      assert.equal(await player.getAttribute('src'), null); assert.equal(await player.evaluate((video: HTMLVideoElement) => video.paused), true);
+      assert.equal(await open.evaluate(element => element === document.activeElement), true);
+      transcriptAvailable = false; await open.click(); await page.getByText('Transcript unavailable', { exact: true }).waitFor();
+      await player.evaluate((video: HTMLVideoElement) => video.play());
+      assert.equal(await player.evaluate((video: HTMLVideoElement) => video.paused), false);
+      await page.getByRole('button', { name: 'Close meeting' }).click();
+      assert.deepEqual(errors, []);
+      console.log('Meeting drawer screenshots: ' + directory);
+    });
+  } finally { await browser.close(); await unlink(fixturePath).catch(() => undefined); }
 });

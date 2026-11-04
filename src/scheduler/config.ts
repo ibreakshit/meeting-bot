@@ -78,6 +78,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SchedulerConfi
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid S3 endpoint');
   }
   return {
+    transcriptionEnabled: env.TRANSCRIPTION_ENABLED === 'true',
     port: integer('SCHEDULER_PORT', 3001), googleClientId: required('GOOGLE_OAUTH_CLIENT_ID'),
     googleClientSecret: required('GOOGLE_OAUTH_CLIENT_SECRET'), secret, allowedEmails, baseUrls, basePath,
     ownerAliases: split(env.SCHEDULER_OWNER_EMAIL_ALIASES).map(email => email.toLowerCase()),

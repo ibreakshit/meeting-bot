@@ -1,6 +1,6 @@
 {
   "name": "meeting-bot",
-  "version": "1.2.35",
+  "version": "1.3.0",
   "description": "Run meeting bots for Google Meet, Microsoft Teams and Zoom",
   "main": "index.js",
   "license": "MIT",
@@ -13,8 +13,13 @@
     "start:scheduler": "ts-node src/scheduler/index.ts",
     "test:scheduler": "node -r ts-node/register --test --test-concurrency=1 src/scheduler/*.test.ts",
     "test:bot-camera": "node -r ts-node/register --test src/lib/botCamera.test.ts",
+    "test:compression": "node -r ts-node/register --test src/lib/compressRecording.test.ts",
     "lint:scheduler": "eslint \"src/scheduler/**/*.ts\" --max-warnings 0",
-    "lint": "eslint \"*/**/*.{js,ts}\" --quiet --fix"
+    "lint": "eslint \"*/**/*.{js,ts}\" --quiet --fix",
+    "start:transcription": "ts-node src/transcription/index.ts",
+    "transcription:retry": "ts-node src/transcription/index.ts retry",
+    "transcription:status": "ts-node src/transcription/index.ts status",
+    "test:transcription": "node -r ts-node/register --test --test-concurrency=1 src/transcription/*.test.ts"
   },
   "keywords": [],
   "author": "screenappai",

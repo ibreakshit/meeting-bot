@@ -18,6 +18,7 @@ export interface DownloadDependencies {
   config: Pick<SchedulerConfig, 's3'>;
   getRecording(botId: string): Promise<StoredRecording | undefined | null>;
   s3?: RecordingStorageClient;
+  disposition?: 'attachment' | 'inline';
 }
 
 type ByteRange = { start: number; end: number };
@@ -55,7 +56,7 @@ function storageStatus(error: unknown): number {
 }
 
 /** Mounted only after the dashboard session guard; object locations never come from the request. */
-export function createRecordingDownloadHandler({ config, getRecording, s3 }: DownloadDependencies): RequestHandler {
+export function createRecordingDownloadHandler({ config, getRecording, s3, disposition = 'attachment' }: DownloadDependencies): RequestHandler {
   const client = s3 ?? new S3Client({
     region: config.s3.region, endpoint: config.s3.endpoint, forcePathStyle: config.s3.forcePathStyle,
     credentials: { accessKeyId: config.s3.accessKeyId, secretAccessKey: config.s3.secretAccessKey },
@@ -76,6 +77,12 @@ export function createRecordingDownloadHandler({ config, getRecording, s3 }: Dow
         const metadata = await client.send(new HeadObjectCommand(base), { abortSignal: abort.signal });
         const size = metadata.ContentLength;
         if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0) throw Error('Invalid object size');
+        const contentType = metadata.ContentType || recording.contentType || 'application/octet-stream';
+        const mediaType = contentType.split(';')[0].trim().toLowerCase();
+        // Inline routes must never turn a stored HTML/SVG object into a dashboard page.
+        if (disposition === 'inline' && !['video/mp4', 'video/webm'].includes(mediaType)) {
+          res.status(415).send('Recording format cannot be played here. Download the recording instead.'); return;
+        }
         const modified = metadata.LastModified instanceof Date ? metadata.LastModified : undefined;
         const etag = typeof metadata.ETag === 'string' ? metadata.ETag : undefined;
         let range: ByteRange | undefined;
@@ -102,13 +109,13 @@ export function createRecordingDownloadHandler({ config, getRecording, s3 }: Dow
           if (object.ContentLength !== expectedLength || (etag && etag !== object.ETag)) throw Error('Object changed during download');
         }
         const safeId = recording.recordingId.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 100) || 'recording';
-        const contentType = metadata.ContentType || recording.contentType || 'application/octet-stream';
         const extension = contentType.split(';')[0].trim().toLowerCase() === 'video/webm' ? 'webm' : contentType.split(';')[0].trim().toLowerCase() === 'video/mp4' ? 'mp4' : 'bin';
         res.status(range ? 206 : 200).set({
           'Accept-Ranges': 'bytes', 'Cache-Control': 'private, no-store',
           'Content-Type': contentType,
           'Content-Length': String(range ? range.end - range.start + 1 : size),
-          'Content-Disposition': `attachment; filename="recording-${safeId}.${extension}"`,
+          'Content-Disposition': `${disposition}; filename="recording-${safeId}.${extension}"`,
+          'X-Content-Type-Options': 'nosniff',
         });
         if (etag) res.set('ETag', etag);
         if (modified) res.set('Last-Modified', modified.toUTCString());
