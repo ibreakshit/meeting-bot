@@ -21,6 +21,8 @@ Workers start compiled code through `npm run start:worker`, so source edits cann
 
 Optional controls are documented in `.env.example`: lead time defaults to 60 seconds, snapshot eligibility to 300 seconds, and aliases to empty. Connected account emails and explicit aliases identify owner attendees; aliases do not grant dashboard access. `DASHBOARD_ALLOWED_EMAILS` separately controls login permission. Calendar IDs and Google's attendee `self` flag do not add owner identities.
 
+The current installation overrides `SCHEDULER_JOIN_LEAD_SECONDS=120` in its private scheduler deployment override, making eligible calendar jobs available two minutes before the meeting starts. Keep that setting when recreating the scheduler to retain the extra browser-setup buffer.
+
 ## First startup
 
 If upgrading the previous single-worker installation, do not recreate Redis first: that configuration disabled both AOF and snapshots, so its named volume alone does not preserve the live dataset. Pause job producers, let the old worker finish its pending jobs and uploads, and reconcile any unresolved processing entries. While the original Redis is still running, enable durable writes:
