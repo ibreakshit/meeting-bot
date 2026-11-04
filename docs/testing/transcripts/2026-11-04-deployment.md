@@ -1,6 +1,6 @@
 # Transcript deployment validation, 2026-11-04
 
-Transcription and correction are enabled for new successful uploads. The scheduler runs from `/home/ibreakshit/orca/releases/meeting-bot/transcription-15e8c95-20261104T120631Z`; an enabled user systemd unit, `meeting-bot-transcription.service`, processes the host queue. [Operational commands and rollback](../../operations/calendar-scheduler.md#host-transcription) describe this installation.
+Transcription and correction are enabled for new successful uploads. This initial deployment used `/home/ibreakshit/orca/releases/meeting-bot/transcription-15e8c95-20261104T120631Z`; an enabled user systemd unit, `meeting-bot-transcription.service`, processes the host queue. The meeting-drawer follow-up below records the current scheduler release. [Operational commands and rollback](../../operations/calendar-scheduler.md#host-transcription) describe this installation.
 
 ## Deployment scope
 
@@ -42,3 +42,9 @@ A correction-only retry through the deployed CLI created a second correction rev
 The merged release passed 40/40 transcription tests, 114/114 scheduler tests, 10/10 Python runner tests, TypeScript build, scheduler lint and transcription lint. The extra scheduler tests include the live checkout's existing History/recovery coverage. The Python tests include unsupported-language preservation, native rounded timing and out-of-window rejection.
 
 This tests actual recording completion through persisted artifacts and History. Fresh Meet/Zoom/Teams admission, Tailscale browsing, OAuth reconnect, Korean word alignment and broad multilingual correction quality were not established by this run. Automatic display-name identification is deferred at the user's request; anonymous audio labels remain. Correction is enabled for evaluation, but the English fixture demonstrated zero-edit preservation and missed a known target. Originals remain immutable and accessible.
+
+## Meeting drawer rollout, 2026-11-05 KST
+
+The scheduler now runs from `/home/ibreakshit/orca/releases/meeting-bot/meeting-drawer-d2f8f52-20261104T145420Z`. It preserves the existing live History title, error, recovery and duration changes, replacing the two recording/transcript actions with View meeting. The drawer contains video above the transcript, uses 60% desktop width and full mobile width. Only the scheduler was recreated; recording workers, Chrome, Redis and RustFS retained their container IDs and start times. Existing scheduler state/dependency volumes were retained. The host transcription worker continues from the original release, and before-upload compression remains pending a separate recording-worker rollout.
+
+The merged release passed 118 scheduler and 40 transcription tests, build and scheduler lint. The playback test fixture was corrected to include its persisted meeting title, matching the live History renderer. The bundled Playwright browser lacks H.264 support, so the final deployed MP4 test used isolated Google Chrome 156 from the existing worker image, without accessing recording browsers. Actual playback, seeking to 30 seconds, byte-range 206, version switching during playback, attachment download, unauthenticated 401, close/unload and focus restoration passed. Screenshots at 1920x1080 and 390x844 were inspected; no page or console errors occurred. Private results and screenshots are retained under the current release's `.deployment/validation` directory.

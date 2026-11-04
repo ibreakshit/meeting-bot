@@ -564,6 +564,7 @@ test('meeting drawer plays and seeks authenticated video without resetting for t
     const f = fixture(); f.deps.config.basePath = '/meeting-bot';
     const dispatch = dispatchRecord({ recording: { botId: 'b', recordingId: 'r', timestamp: 'now', contentType: 'video/webm', storage: { provider: 's3', bucket: 'private', key: 'recording.webm' } } });
     dispatch.payload.eventId = 'Weekly product review';
+    Object.assign(dispatch, { meetingTitle: 'Weekly product review' });
     f.deps.ledger.listDispatches = async () => [dispatch]; f.deps.ledger.history = f.deps.ledger.listDispatches;
     let videoReads = 0; let transcriptAvailable = true;
     f.deps.s3 = { send: async command => {

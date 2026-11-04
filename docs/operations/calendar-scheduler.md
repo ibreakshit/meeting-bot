@@ -171,7 +171,7 @@ Configuration and fixture tests do not verify the deployed installation. Before 
 
 The 2026-11-04 deployment enables transcription and correction for newly accepted uploads. Successful upload completion immediately queues transcription; the host worker processes one job at a time. `TRANSCRIPTION_ENABLED=true` uses a persisted activation time and does not backfill history. Both feature flags still default to false in an unconfigured installation. See the [deployment validation](../testing/transcripts/2026-11-04-deployment.md) for evidence and model-quality limits. Speaker-name identification is deferred; anonymous audio diarization remains enabled.
 
-The active source is `/home/ibreakshit/orca/releases/meeting-bot/transcription-15e8c95-20261104T120631Z`, containing the feature plus the pre-existing live scheduler changes. The main checkout's uncommitted files were preserved. The host worker runs compiled code through the enabled user unit `meeting-bot-transcription.service`. Its private `EnvironmentFile` contains worker-only Redis/S3 credentials and WhisperX paths, without Google OAuth credentials. Redis and S3 use loopback ports 6379 and 9000; Whisper and Gemma use 8090 and 8091. The worker never starts, stops or reconfigures model services. Check `modelctl status` when diagnosing inference failures.
+The scheduler source is `/home/ibreakshit/orca/releases/meeting-bot/meeting-drawer-d2f8f52-20261104T145420Z`, preserving the live scheduler changes and adding the combined meeting video/transcript drawer. The main checkout's uncommitted files were preserved. The host worker continues running compiled code from `/home/ibreakshit/orca/releases/meeting-bot/transcription-15e8c95-20261104T120631Z` through the enabled user unit `meeting-bot-transcription.service`. Its private `EnvironmentFile` contains worker-only Redis/S3 credentials and WhisperX paths, without Google OAuth credentials. Redis and S3 use loopback ports 6379 and 9000; Whisper and Gemma use 8090 and 8091. The worker never starts, stops or reconfigures model services. Check `modelctl status` when diagnosing inference failures.
 
 ```sh
 systemctl --user status meeting-bot-transcription.service
@@ -194,7 +194,7 @@ Original artifacts are published before correction. Failed correction leaves ori
 For this installation, scheduler recreation must include its private deployment override. Using the base file alone would restore the main checkout's source bind. The override preserves the running scheduler's settings and existing state/dependency volumes. It contains secrets: do not print or commit it. Recreate only the scheduler with:
 
 ```sh
-release=/home/ibreakshit/orca/releases/meeting-bot/transcription-15e8c95-20261104T120631Z
+release=/home/ibreakshit/orca/releases/meeting-bot/meeting-drawer-d2f8f52-20261104T145420Z
 docker compose -p meeting-bot \
   --project-directory /home/ibreakshit/Workspace/meeting-bot \
   --env-file /home/ibreakshit/Workspace/meeting-bot/.env \
@@ -203,7 +203,9 @@ docker compose -p meeting-bot \
   up -d --no-deps --no-build --pull never --wait --wait-timeout 60 calendar-scheduler
 ```
 
-Rollback stops future host processing and restores the main checkout's scheduler source with transcription disabled. Existing recordings, transcript artifacts, queues and scheduler state remain intact. Leave recording workers, Chrome, Redis and storage running:
+For a drawer-only rollback, use the current scheduler release's `.deployment/compose.rollback.yml` with the scheduler-only command above and keep the host transcription worker enabled. It restores the preceding transcription UI. Recording workers and their images were not changed by the drawer deployment; before-upload compression is still pending a separate worker rollout.
+
+Full feature rollback stops future host processing and restores the main checkout's scheduler source with transcription disabled. Use the original transcription release's rollback file below. Existing recordings, transcript artifacts, queues and scheduler state remain intact. Leave recording workers, Chrome, Redis and storage running:
 
 ```sh
 systemctl --user disable --now meeting-bot-transcription.service
