@@ -41,3 +41,7 @@ The remaining twelve extracted frames were not completed through Gemma. The synt
 Automatic naming stays disabled. A later experiment should first establish a safe memory envelope and evaluate independent single-frame/crop requests, exact OCR, cue grounding and three agreeing turns without contradictory names. Existing original/corrected transcript hashes and canonical speaker IDs remain unchanged.
 
 Private screenshots, final observations, extraction timestamps/hashes, human review and numeric summary are retained at `/tmp/meeting-bot-vision-2026-11-04/`, with cleanup owned by the task operator after acceptance or follow-up. They are not committed to the repository. No private audio, transcript or participant labels are included in this report.
+
+## Follow-up
+
+The [labeled speaking-indicator experiment](2026-11-04-speaking-indicator-examples.md) completed on the Gemma instance subsequently loaded by the user. It tested isolated crops, single full screenshots, synthetic six-participant controls and a real12-participant screen-share layout. The sample did not fix full-frame misses or participant-association errors; automatic naming remains disabled.
