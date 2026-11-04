@@ -167,10 +167,51 @@ node -r ts-node/register --test src/scheduler/deployment.test.ts
 
 Configuration and fixture tests do not verify the deployed installation. Before relying on recordings, verify OAuth login/connect from localhost and Tailscale, real Meet/Zoom/Teams admission, queued edits and cancellation, overrides across connected accounts and aliases, and callback/result delivery. Run simultaneous distinguishable recordings and inspect both files for audio/video interference, repeat same-provider concurrency and overflow, and verify a third configured worker. Exercise the actual S3-compatible server's range and conditional reads, interrupt/resume downloads, compare file hashes, and measure time to first byte, throughput and bounded scheduler memory over localhost and Tailscale while workers are active. These checks require configured accounts, permitted test meetings, deployed storage and a real tailnet client; fixture success does not establish them.
 
-### Host transcription (feature validation pending)
+### Host transcription
 
-`TRANSCRIPTION_ENABLED=true` queues recordings accepted after the persisted activation time. It does not backfill history. Keep `TRANSCRIPTION_CORRECTION_ENABLED=false` until the structured prompt passes preservation evaluation. The host worker needs Redis/S3 credentials and WhisperX paths, without Google OAuth settings. Set `TRANSCRIPTION_REDIS_URL` to the loopback port actually published by Compose (`REDIS_PORT_HOST`, default 6379). Keep that port bound to loopback.
+The 2026-11-04 deployment enables transcription and correction for newly accepted uploads. Successful upload completion immediately queues transcription; the host worker processes one job at a time. `TRANSCRIPTION_ENABLED=true` uses a persisted activation time and does not backfill history. Both feature flags still default to false in an unconfigured installation. See the [deployment validation](../testing/transcripts/2026-11-04-deployment.md) for evidence and model-quality limits. Speaker-name identification is deferred; anonymous audio diarization remains enabled.
 
-Run `modelctl status` before scheduling inference. The worker does not start, stop or reconfigure model services. Run `npm run start:transcription` from this checkout to process one job at a time. Inspect a known identity with `npm run transcription:status -- --job-id ID`. Retry only correction with `npm run transcription:retry -- --job-id ID --stage correction`; it starts from the immutable original and creates a new revision. Active ownership prevents concurrent retries. SIGTERM cancels the process group; expired ownership makes interrupted jobs reclaimable after 120 seconds. Transient service/storage failures persist retries at 5 and 30 seconds, for three attempts total.
+The active source is `/home/ibreakshit/orca/releases/meeting-bot/transcription-15e8c95-20261104T120631Z`, containing the feature plus the pre-existing live scheduler changes. The main checkout's uncommitted files were preserved. The host worker runs compiled code through the enabled user unit `meeting-bot-transcription.service`. Its private `EnvironmentFile` contains worker-only Redis/S3 credentials and WhisperX paths, without Google OAuth credentials. Redis and S3 use loopback ports 6379 and 9000; Whisper and Gemma use 8090 and 8091. The worker never starts, stops or reconfigures model services. Check `modelctl status` when diagnosing inference failures.
 
-Original artifacts are published before correction. Failed correction leaves original downloads and any prior successful correction available. Source location/content conflicts require operator investigation. Artifacts remain private under `meeting-bot/transcripts/`; there is no automatic deletion or historical backfill. Unreferenced uploads from interrupted attempts remain private. Real-model English/Korean alignment, tokenizer parity and correction quality remain unverified until an isolated inference window is available. Speaker name enrichment is disabled: the configured Gemma service lacks a multimodal projector.
+```sh
+systemctl --user status meeting-bot-transcription.service
+journalctl --user -u meeting-bot-transcription.service -n 50 --no-pager
+```
+
+Inspect or retry from the active release directory, replacing `ID` with the transcript job's 64-character identity:
+
+```sh
+TRANSCRIPTION_REDIS_URL=redis://127.0.0.1:6379 S3_BUCKET_NAME=recordings \
+  npm run transcription:status -- --job-id ID
+TRANSCRIPTION_REDIS_URL=redis://127.0.0.1:6379 S3_BUCKET_NAME=recordings \
+  npm run transcription:retry -- --job-id ID --stage correction
+```
+
+Correction-only retry starts from the immutable original and creates a new revision. Active ownership prevents concurrent retries. SIGTERM cancels the process group; expired ownership makes interrupted jobs reclaimable after 120 seconds. Transient service/storage failures persist retries at 5 and 30 seconds, for three attempts total.
+
+Original artifacts are published before correction. Failed correction leaves original downloads and any prior successful correction available. Missing cached language alignment preserves the original ASR segment timings with an explicit warning; correction realignment still fails rather than inventing word timings. Source location/content conflicts require operator investigation. Artifacts remain private under `meeting-bot/transcripts/`; there is no automatic deletion or historical backfill. Unreferenced uploads from interrupted attempts remain private.
+
+For this installation, scheduler recreation must include its private deployment override. Using the base file alone would restore the main checkout's source bind. The override preserves the running scheduler's settings and existing state/dependency volumes. It contains secrets: do not print or commit it. Recreate only the scheduler with:
+
+```sh
+release=/home/ibreakshit/orca/releases/meeting-bot/transcription-15e8c95-20261104T120631Z
+docker compose -p meeting-bot \
+  --project-directory /home/ibreakshit/Workspace/meeting-bot \
+  --env-file /home/ibreakshit/Workspace/meeting-bot/.env \
+  -f /home/ibreakshit/Workspace/meeting-bot/docker-compose.yml \
+  -f "$release/.deployment/compose.transcription.yml" \
+  up -d --no-deps --no-build --pull never --wait --wait-timeout 60 calendar-scheduler
+```
+
+Rollback stops future host processing and restores the main checkout's scheduler source with transcription disabled. Existing recordings, transcript artifacts, queues and scheduler state remain intact. Leave recording workers, Chrome, Redis and storage running:
+
+```sh
+systemctl --user disable --now meeting-bot-transcription.service
+release=/home/ibreakshit/orca/releases/meeting-bot/transcription-15e8c95-20261104T120631Z
+docker compose -p meeting-bot \
+  --project-directory /home/ibreakshit/Workspace/meeting-bot \
+  --env-file /home/ibreakshit/Workspace/meeting-bot/.env \
+  -f /home/ibreakshit/Workspace/meeting-bot/docker-compose.yml \
+  -f "$release/.deployment/compose.rollback.yml" \
+  up -d --no-deps --no-build --pull never --wait --wait-timeout 60 calendar-scheduler
+```

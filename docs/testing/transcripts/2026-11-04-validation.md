@@ -1,5 +1,7 @@
 # Transcript feature validation, 2026-11-04
 
+This records the initial isolated implementation checks. The subsequent [deployment validation](2026-11-04-deployment.md) records real inference, fixes and the now-enabled installation.
+
 Implementation is on `ibreakshit/feat-transcription`. Nothing was deployed, activated or changed in the main checkout or model deployments. Both feature flags default to false. Tests use isolated Redis containers, a loopback HTTP object-store fixture, synthetic audio metadata/inference doubles and fresh Playwright profiles. No private audio or transcript is committed.
 
 Verified behavior includes duplicate recording delivery, activation eligibility, conflicting locations, lease reclamation, stale-owner publication rejection, host-wide serialization, persisted attempt limits, immutable original publication, correction-only retries without ASR, previous successful revision retention, source-content hashing, cancellation, empty Redis warning arrays, printed/logged CPU fallback retention, Unicode patch offsets, numerical/negation preservation and fresh speaker labels after realignment. Mocked inference establishes orchestration behavior, not model accuracy.

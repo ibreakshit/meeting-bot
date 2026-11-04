@@ -12,6 +12,10 @@ import warnings
 from pathlib import Path
 
 
+class AlignmentUnavailableError(RuntimeError):
+    """Cached language alignment cannot run; original ASR remains usable."""
+
+
 @contextlib.contextmanager
 def retained_warnings():
     retained = []
@@ -62,7 +66,10 @@ def transcribe(audio_path, output_directory, engine):
     started = time.monotonic()
     with retained_warnings() as retained:
         result = engine.transcribe(audio_path)
-        result = engine.align(result, audio_path)
+        try:
+            result = engine.align(result, audio_path)
+        except AlignmentUnavailableError as error:
+            retained.append(str(error))
         intervals = engine.diarize(audio_path) if result['segments'] else []
         save_json(output / 'diarization.json', intervals)
         result = engine.assign(intervals, result) if intervals else result
@@ -97,7 +104,9 @@ def realign(audio_path, segments_path, diarization_path, output_directory, engin
                 words.extend(item.get('words', []))
             for word in words:
                 for key in ('start', 'end'):
-                    if key in word and not segment['start'] <= word[key] <= segment['end'] + 0.01:
+                    # Native word times are rounded to centiseconds while ASR
+                    # windows retain milliseconds. Preserve those real timings.
+                    if key in word and not (word[key] >= 0 and segment['start'] - 0.01 <= word[key] <= segment['end'] + 0.01):
                         raise ValueError('Aligned word outside source audio window')
             native['word_segments'].extend(words)
             # Keep canonical text/ranges while reporting freshly assigned speakers.
@@ -145,7 +154,12 @@ class WhisperXEngine:
             return copy.deepcopy(result)
         if self.audio is None:
             self.audio = self.load_audio(path)
-        model, metadata = self.load_align_model(result['language'], device='vulkan', model_cache_only=True)
+        try:
+            model, metadata = self.load_align_model(result['language'], device='vulkan', model_cache_only=True)
+        except (FileNotFoundError, ValueError) as error:
+            raise AlignmentUnavailableError(
+                f"Word alignment unavailable for {result['language']}; cached language assets unsupported or missing. Original ASR segment timing only."
+            ) from error
         try:
             aligned = self.align_function(result['segments'], model, metadata, self.audio, device='vulkan')
             aligned['language'] = result['language']

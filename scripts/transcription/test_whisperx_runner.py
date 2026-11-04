@@ -116,3 +116,46 @@ class SpeakerTests(unittest.TestCase):
             display = json.loads((root / 'out/display.json').read_text())['segments'][0]
             self.assertEqual(display['speaker'], 'SPEAKER_00 / SPEAKER_01')
             self.assertEqual(display['id'], 's')
+
+
+class UnsupportedAlignmentTests(unittest.TestCase):
+    def test_missing_language_aligner_preserves_original_with_visible_warning(self):
+        from whisperx_runner import AlignmentUnavailableError
+        engine = RunnerTests().engine()
+        engine.transcribe.return_value['language'] = 'ko'
+        engine.align.side_effect = AlignmentUnavailableError('Word alignment unavailable for ko; original ASR segment timing only.')
+        with tempfile.TemporaryDirectory() as directory:
+            transcribe('audio.wav', directory, engine)
+            native = json.loads((Path(directory) / 'transcript.json').read_text())
+            metadata = json.loads((Path(directory) / 'result.json').read_text())
+            self.assertEqual(native['language'], 'ko')
+            self.assertEqual(native['segments'][0]['text'], 'hello')
+            self.assertNotIn('start', native['segments'][0]['words'][0])
+            self.assertTrue(any('alignment unavailable for ko' in warning for warning in metadata['warnings']))
+            self.assertEqual(engine.diarize.call_count, 1)
+
+
+class RoundedAlignmentTests(unittest.TestCase):
+    def test_native_centisecond_rounding_is_preserved_without_clamping(self):
+        from whisperx_runner import realign
+        engine = RunnerTests().engine()
+        engine.align.side_effect = lambda result, audio: {'segments': [{'text': 'hello', 'words': [{'word': 'hello', 'start': 13.06, 'end': 13.5}]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'segments.json').write_text(json.dumps({'language': 'en', 'segments': [{'id': 's', 'text': 'hello', 'start': 13.061, 'end': 14.061}]}))
+            (root / 'saved.json').write_text('[]')
+            realign('audio', root / 'segments.json', root / 'saved.json', root / 'out', engine)
+            word = json.loads((root / 'out/transcript.json').read_text())['word_segments'][0]
+            self.assertEqual(word['start'], 13.06)
+
+    def test_word_outside_rounding_tolerance_is_rejected(self):
+        from whisperx_runner import realign
+        engine = RunnerTests().engine()
+        engine.align.side_effect = lambda result, audio: {'segments': [{'text': 'hello', 'words': [{'word': 'hello', 'start': 12.9, 'end': 13.5}]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'segments.json').write_text(json.dumps({'language': 'en', 'segments': [{'id': 's', 'text': 'hello', 'start': 13.061, 'end': 14.061}]}))
+            (root / 'saved.json').write_text('[]')
+            with self.assertRaisesRegex(ValueError, 'outside'):
+                realign('audio', root / 'segments.json', root / 'saved.json', root / 'out', engine)
+            self.assertFalse((root / 'out/result.json').exists())
