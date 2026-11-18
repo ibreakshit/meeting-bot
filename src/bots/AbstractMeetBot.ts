@@ -23,6 +23,7 @@ export interface JoinParams {
   botId?: string;
   eventId?: string;
   thumbnailId?: string;
+  passcode?: string;
   uploader: IUploader;
 }
 

@@ -3,7 +3,7 @@ import { Frame, Page } from 'playwright';
 import { JoinParams, AbstractMeetBot } from './AbstractMeetBot';
 import { BotStatus, WaitPromise } from '../types';
 import config from '../config';
-import { RecordingUploadFailedError, WaitingAtLobbyRetryError } from '../error';
+import { RecordingUploadFailedError, UnsupportedMeetingError, WaitingAtLobbyRetryError } from '../error';
 import { v4 } from 'uuid';
 import { patchBotStatus } from '../services/botService';
 import { RecordingTask } from '../tasks/RecordingTask';
@@ -12,10 +12,10 @@ import { getWaitingPromise } from '../lib/promise';
 import createBrowserContext, { closeBotBrowser } from '../lib/chromium';
 import { uploadDebugImage } from '../services/bugService';
 import { Logger } from 'winston';
-import { handleWaitingAtLobbyError } from './MeetBotBase';
+import { handleUnsupportedMeetingError, handleWaitingAtLobbyError } from './MeetBotBase';
 import { ZOOM_REQUEST_DENIED } from '../constants';
 import { installZoomNoticeDismissal } from '../lib/zoomNotifications';
-import { humanClick, humanMoveTo, humanType } from '../lib/humanCursor';
+import { humanClick, humanDismiss, humanMoveTo, humanType } from '../lib/humanCursor';
 
 abstract class BotBase extends AbstractMeetBot {
   protected page: Page;
@@ -37,7 +37,7 @@ export class ZoomBot extends BotBase {
 
   // TODO use base class for shared functions such as bot status and bot logging
   // TODO Lift the JoinParams to the constructor argument
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, passcode, uploader }: JoinParams): Promise<void> {
     const _state: BotStatus[] = ['processing'];
 
     const handleUpload = async () => {
@@ -49,7 +49,7 @@ export class ZoomBot extends BotBase {
     
     try {
       const pushState = (st: BotStatus) => _state.push(st);
-      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, pushState, uploader });
+      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, passcode, pushState, uploader });
       await patchBotStatus({ botId, eventId, provider: 'zoom', status: _state, token: bearerToken }, this._logger);
 
       // Finish the upload from the temp video
@@ -67,6 +67,10 @@ export class ZoomBot extends BotBase {
       
       if (error instanceof WaitingAtLobbyRetryError) {
         await handleWaitingAtLobbyError({ token: bearerToken, botId, eventId, provider: 'zoom', error }, this._logger);
+      }
+
+      if (error instanceof UnsupportedMeetingError) {
+        await handleUnsupportedMeetingError({ token: bearerToken, botId, eventId, provider: 'zoom', error }, this._logger);
       }
 
       throw error;
@@ -112,6 +116,8 @@ export class ZoomBot extends BotBase {
 
     const attempts = 3;
     let usingDirectWebClient = false;
+    // Zoom has shipped this as a "Join from your browser" link and a "Join from browser" button.
+    const joinFromBrowserLocator = () => this.page.locator('a, button').filter({ hasText: /Join from (your )?browser/i }).first();
     const findAndEnableJoinFromBrowserButton = async (retry: number): Promise<boolean> => {
       try {
         if (retry >= attempts) {
@@ -130,7 +136,7 @@ export class ZoomBot extends BotBase {
           await humanClick(launchDownloadGetByRole, { force: true });
         }
 
-        const joinFromBrowser = this.page.locator('a', { hasText: 'Join from your browser' }).first();
+        const joinFromBrowser = joinFromBrowserLocator();
         await joinFromBrowser.waitFor({ timeout: 4000 });
 
         if (await joinFromBrowser.isVisible({ timeout: 500 }).catch(() => false)) {
@@ -179,7 +185,7 @@ export class ZoomBot extends BotBase {
             }
 
             try {
-              const joinFromBrowser = this.page.locator('a', { hasText: 'Join from your browser' }).first();
+              const joinFromBrowser = joinFromBrowserLocator();
               if (await joinFromBrowser.isVisible({ timeout: 500 }).catch(() => false)) {
                 this._logger.info('Waiting for zoom navigation to meeting page...', params.userId);
               }
@@ -247,7 +253,7 @@ export class ZoomBot extends BotBase {
 
         apps.push(startWith);
         if (startWith === 'app') {
-          const input = await this.page.waitForSelector('input[type="text"]', { timeout: 30000 });
+          const input = await this.page.waitForSelector('input[type="text"]:visible', { timeout: 30000 });
           const join = this.page.locator('button', { hasText: /Join/i }).first();
           await join.waitFor({ timeout: 15000 });
           this._logger.info('App container...', { input: input !== null, join: join !== null });
@@ -289,15 +295,26 @@ export class ZoomBot extends BotBase {
     for (const question of ['Do you want people to see you in the meeting?', 'Do you want people to hear you in the meeting?']) {
       await this.page.addLocatorHandler(prejoin.getByText(question, { exact: true }), async () => {
         this._logger.info('Continuing past Zoom microphone and camera prompt...', { question });
-        await humanClick(prejoin.getByText('Continue without microphone and camera', { exact: true }));
+        await humanDismiss(prejoin.getByText('Continue without microphone and camera', { exact: true }));
       });
     }
 
     this._logger.info('Waiting for the input field to be visible...');
-    await iframe.waitForSelector('input[type="text"]', { timeout: 60000 });
+    // The web client also renders hidden text inputs; wait for one a person could type into.
+    await iframe.waitForSelector('input[type="text"]:visible', { timeout: 60000 });
+
+    // Links without an embedded pwd show a passcode field above the name; fill both top to bottom.
+    const passcodeInput = iframe.locator('#input-for-pwd');
+    if (await passcodeInput.isVisible()) {
+      if (!params.passcode) throw new UnsupportedMeetingError('Zoom meeting requires a passcode, but none was provided', null);
+      this._logger.info('Entering the meeting passcode...');
+      await humanType(passcodeInput, params.passcode);
+    }
+    const nameById = iframe.locator('#input-for-name');
+    const nameInput = await nameById.count() ? nameById : iframe.locator('input[type="text"]:visible').first();
 
     this._logger.info('Filling the input field with the name...');
-    await humanType(iframe.locator('input[type="text"]').first(), name ? name : 'ScreenApp Notetaker');
+    await humanType(nameInput, name ? name : 'ScreenApp Notetaker');
 
     if (params.thumbnailId) await configureBotCameraControls(iframe, 'zoom', this._logger);
     this._logger.info('Clicking the "Join" button...');

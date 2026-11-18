@@ -14,7 +14,9 @@ async function cursorFor(page: Page): Promise<GhostCursor> {
 }
 
 /** Move along a human-like path to a random point inside the target, then click there with trusted mouse events. */
-export async function humanClick(target: Locator, { timeout = 5000, force = false } = {}): Promise<void> {
+// Without a timeout, waits follow Playwright's default like the clicks this replaces; time spent in
+// locator handlers (e.g. Zoom's device prompts) counts against it.
+export async function humanClick(target: Locator, { timeout, force = false }: { timeout?: number; force?: boolean } = {}): Promise<void> {
   const cursor = await cursorFor(target.page());
   await target.waitFor({ state: 'visible', timeout });
   // A wrapped inline link's bounding box includes empty corners another element would receive,
@@ -34,6 +36,17 @@ export async function humanClick(target: Locator, { timeout = 5000, force = fals
   // Not cursor.click(): it swallows click errors and re-aims at the element centre.
   // Playwright still checks that this point hits an enabled target unless force is set.
   await target.click({ position: { x: x - box.x, y: y - box.y }, delay: 40 + Math.random() * 60, timeout, force });
+}
+
+/**
+ * Click an overlay away from inside a Playwright locator handler, then glide back. The interrupted
+ * click resumes at its own aim point, so without the return trip it would jump there in one step.
+ */
+export async function humanDismiss(target: Locator): Promise<void> {
+  const cursor = await cursorFor(target.page());
+  const resume = cursor.getLocation();
+  await humanClick(target);
+  await cursor.moveTo(resume);
 }
 
 /** Click a text field like a person, replace its contents, and type with uneven key timing. */

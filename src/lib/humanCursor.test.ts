@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { chromium } from 'playwright';
-import { humanClick, humanMoveTo, humanType } from './humanCursor';
+import { humanClick, humanDismiss, humanMoveTo, humanType } from './humanCursor';
 
 type Recorded = { moves: [number, number][]; clicks: { id: string; trusted: boolean; detail: number; x: number; y: number }[]; keydowns: number };
 
@@ -57,4 +57,25 @@ test('human cursor clicks wrapped inline links on the text, not the empty corner
     await humanClick(link, { timeout: 2000 });
   }
   assert.equal(await page.frames()[1].evaluate(() => (window as unknown as { hits: number }).hits), 10);
+});
+
+test('human cursor clicks wait as long as Playwright would while overlay handlers run', { timeout: 60_000 }, async t => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+  // Zoom shows two device prompts in turn; dismissing each fades out for a while.
+  await page.setContent(`
+    <input id="name" style="position:absolute;left:100px;top:100px">
+    <div id="prompt" style="position:fixed;inset:0;background:#8888"><p>Do you want people to see you?</p>
+      <button id="continue" style="position:absolute;left:300px;top:300px" onclick="setTimeout(() => this.parentElement.remove(), 5500)">Continue</button></div>
+    <script>
+      window.moves = 0; window.movesBeforeNameClick = -1;
+      addEventListener('mousemove', () => moves++, true);
+      addEventListener('click', e => { if (e.target.id === 'continue') moves = 0; if (e.target.id === 'name') movesBeforeNameClick = moves; }, true);
+    </script>`);
+  await page.addLocatorHandler(page.getByText('Do you want people to see you?'), () => humanDismiss(page.locator('#continue')));
+  await humanType(page.locator('#name'), 'Bot');
+  assert.equal(await page.locator('#name').inputValue(), 'Bot');
+  // After the handler moved the pointer to the overlay, the field click must not jump straight back.
+  assert.ok(await page.evaluate(() => (window as unknown as { movesBeforeNameClick: number }).movesBeforeNameClick) > 5, 'cursor glides back to the field');
 });

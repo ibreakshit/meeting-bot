@@ -14,6 +14,8 @@ export interface MeetingJoinParams {
   botId?: string;
   eventId?: string;
   thumbnailId?: string;
+  /** Zoom meeting passcode, for links that do not embed one. */
+  passcode?: string;
 }
 
 export interface MeetingJoinRedisParams extends MeetingJoinParams {

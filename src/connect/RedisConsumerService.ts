@@ -161,6 +161,7 @@ export class RedisConsumerService {
           url: meetingParams.url,
           name: meetingParams.name,
           thumbnailId: meetingParams.thumbnailId,
+          passcode: typeof meetingParams.passcode === 'string' ? meetingParams.passcode : undefined,
           bearerToken: meetingParams.bearerToken,
           teamId: meetingParams.teamId,
           timezone: meetingParams.timezone,

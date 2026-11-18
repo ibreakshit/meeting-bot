@@ -49,6 +49,11 @@ RUN groupadd -g 1001 chrome && \
   chmod 1777 /tmp/.X11-unix && \
   chmod 700 /run/user/1001
 
+# Meeting pages launch desktop apps (zoommtg://, msteams://) on load. Without this policy
+# Chrome shows a tab-modal "Open xdg-open?" prompt that silently drops all page input.
+RUN mkdir -p /etc/opt/chrome/policies/managed
+COPY auto_launch_protocols.json /etc/opt/chrome/policies/managed/auto_launch_protocols.json
+
 COPY --chown=chrome:chrome scripts/start-chrome-cdp.sh /usr/local/bin/start-chrome-cdp
 RUN chmod +x /usr/local/bin/start-chrome-cdp
 
