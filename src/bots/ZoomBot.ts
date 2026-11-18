@@ -14,6 +14,7 @@ import { uploadDebugImage } from '../services/bugService';
 import { Logger } from 'winston';
 import { handleWaitingAtLobbyError } from './MeetBotBase';
 import { ZOOM_REQUEST_DENIED } from '../constants';
+import { installZoomNoticeDismissal } from '../lib/zoomNotifications';
 
 abstract class BotBase extends AbstractMeetBot {
   protected page: Page;
@@ -381,111 +382,23 @@ export class ZoomBot extends BotBase {
       throw error;
     }
 
-    // Wait for device notifications and close the notifications
-    let notifyInternval: NodeJS.Timeout;
-    let notifyTimeout: NodeJS.Timeout;
+    let stopDismissingNotices: (() => Promise<void>) | undefined;
     try {
-      const cameraNotifications: ('found' | 'dismissed')[] = [];
-      const micNotifications: ('found' | 'dismissed')[] = [];
-      const stopWaiting = 6 * 1000;
-      let sawNotification = false;
-      
-      const notifyPromise = new Promise<boolean>((res) => {
-        notifyTimeout = setTimeout(() => {
-          clearInterval(notifyInternval);
-          res(false);
-        }, stopWaiting);
-        notifyInternval = setInterval(async () => {
-          try {
-            const cameraDiv = iframe.locator('div', { hasText: /^Cannot detect your camera/i }).first();
-            const micDiv = iframe.locator('div', { hasText: /^Cannot detect your microphone/i }).first();
-            const cameraVisible = await cameraDiv.isVisible({ timeout: 500 }).catch(() => false);
-            const micVisible = await micDiv.isVisible({ timeout: 500 }).catch(() => false);
-
-            if (!cameraVisible && !micVisible && !sawNotification) {
-              clearInterval(notifyInternval);
-              clearTimeout(notifyTimeout);
-              res(false);
-              return;
-            }
-
-            if (cameraVisible) {
-              sawNotification = true;
-              if (!cameraNotifications.includes('found'))
-                cameraNotifications.push('found');
-            }
-            else {
-              if (cameraNotifications.includes('found'))
-                cameraNotifications.push('dismissed');
-            }
-
-            if (micVisible) {
-              sawNotification = true;
-              if (!micNotifications.includes('found'))
-                micNotifications.push('found');
-            }
-            else {
-              if (micNotifications.includes('found'))
-                micNotifications.push('dismissed');
-            }
-
-            if (micNotifications.length >= 2 && cameraNotifications.length >= 2) {
-              clearInterval(notifyInternval);
-              clearTimeout(notifyTimeout);
-              res(true);
-              return;
-            }
-
-            const closeButtons = await iframe.getByLabel('close').all();
-            this._logger.info('Clicking the "x" button...', closeButtons.length);
-            
-            let counter = 0;
-            try {
-              for await (const close of closeButtons) {
-                if (await close.isVisible({ timeout: 500 }).catch(() => false)) {
-                  await close.click({ timeout: 1000 });
-                  counter += 1;
-                }
-              }
-            } catch (err) {
-              this._logger.info('Unable to click the x notifications', counter, err);
-            }
-          } catch (error) {
-            // Log and ignore this error
-            this._logger.info('Unable to close x notifications...', error);
-            clearInterval(notifyInternval);
-            clearTimeout(notifyTimeout);
-            res(false);
-          }
-        }, 1000);
-      });
-
-      await notifyPromise.catch(() => {
-        clearInterval(notifyInternval);
-        clearTimeout(notifyTimeout);
-      });
-    }
-    catch(err) {
-      this._logger.info('Caught notifications close error', err.message);
-    }
-
-    // Dismiss annoucements OK button if present
-    try {
-      const okButton = iframe.locator('button', { hasText: 'OK' }).first();
-      if (await okButton.isVisible({ timeout: 1000 }).catch(() => false)) {
-        await okButton.click({ timeout: 1000 });
-        this._logger.info('Dismissed the OK button...');
-      }
+      // Clear hover tooltips and dismiss advisory overlays before the first captured frame.
+      await this.page.mouse.move(0, 0);
+      stopDismissingNotices = await installZoomNoticeDismissal(iframe);
     } catch (error) {
-      this._logger.info('OK button might be missing...', error);
+      this._logger.warn('Unable to install Zoom advisory notification cleanup', { error });
     }
 
     pushState('joined');
-
-    // Recording the meeting page
     this._logger.info('Begin recording...');
-    await this.recordMeetingPage({ ...params });
-    
+    try {
+      await this.recordMeetingPage({ ...params });
+    } finally {
+      await stopDismissingNotices?.();
+    }
+
     pushState('finished');
   }
 
