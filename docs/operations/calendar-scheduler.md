@@ -207,7 +207,28 @@ docker compose -p meeting-bot \
   up -d --no-deps --no-build --pull never --wait --wait-timeout 60 calendar-scheduler
 ```
 
-For a drawer-only rollback, use the current scheduler release's `.deployment/compose.rollback.yml` with the scheduler-only command above and keep the host transcription worker enabled. It restores the preceding transcription UI. Recording workers now use `meeting-bot:processing-20261105`, with before-upload MP4 compression and authenticated processing reports. When recreating workers, also include the current release's private `.deployment/compose.workers.json` override to retain the pinned image and existing settings. Restart workers only when idle. The host transcription service is unchanged.
+For a drawer-only rollback, use the current scheduler release's `.deployment/compose.rollback.yml` with the scheduler-only command above and keep the host transcription worker enabled. It restores the preceding transcription UI. The host transcription service is unchanged.
+
+### Recording workers and Chrome sidecars
+
+The 2026-11-19 rollout runs both workers on `meeting-bot:main-98af8b0` and both Chrome sidecars on `meeting-bot-chrome:main-98af8b0` (tagged `meeting-bot-chrome:local`), built with `git archive` from `main` at `98af8b0`.
+It adds the human-like cursor for Meet, Zoom and Teams joins, Meet's "Continue as guest" step, Zoom's "Join from browser" button and passcode joins, and the sidecar's desktop-app launch policy.
+Without that policy, Zoom's join page opens a tab-modal "Open xdg-open?" prompt that silently drops every click sent to the page.
+The worker settings and secrets live in the private override `/home/ibreakshit/orca/releases/meeting-bot/human-cursor-98af8b0-20261119/.deployment/compose.workers.json`; it differs from the preceding override only in the image.
+Restart workers only when idle: check that `jobs:meetbot:list` and both `jobs:meetbot:processing:N` queues are empty and no worker logged a job recently.
+Recreate the sidecars first, then the workers, keeping their named volumes:
+
+```sh
+release=/home/ibreakshit/orca/releases/meeting-bot/human-cursor-98af8b0-20261119
+docker compose -p meeting-bot --project-directory /home/ibreakshit/Workspace/meeting-bot \
+  -f docker-compose.yml \
+  up -d --no-deps --no-build --pull never --force-recreate --wait chrome-cdp-1 chrome-cdp-2
+docker compose -p meeting-bot --project-directory /home/ibreakshit/Workspace/meeting-bot \
+  -f docker-compose.yml -f "$release/.deployment/compose.workers.json" \
+  up -d --no-deps --no-build --pull never --force-recreate --wait meeting-bot-1 meeting-bot-2
+```
+
+To roll back, retag `meeting-bot-chrome:rollback-20261119` as `meeting-bot-chrome:local` and use `$release/.deployment/compose.workers.rollback.json` (image `meeting-bot:google-auth-join-20261112`) with the same commands.
 
 Full feature rollback stops future host processing and restores the main checkout's scheduler source with transcription disabled. Use the original transcription release's rollback file below. Existing recordings, transcript artifacts, queues and scheduler state remain intact. Leave recording workers, Chrome, Redis and storage running:
 
