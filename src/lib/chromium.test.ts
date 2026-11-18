@@ -267,7 +267,8 @@ for (const mode of ['direct', 'auto', 'click']) {
     let timeout: NodeJS.Timeout | undefined;
     try {
       await Promise.race([joining, new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error('Teams did not advance past its launcher within six seconds')), 6000);
+        // Human cursor pacing adds a few seconds; a launcher hang waits out openPrejoin's 60s.
+        timeout = setTimeout(() => reject(new Error('Teams did not join within twelve seconds')), 12_000);
       })]);
       assert.equal(reachedRecording, true);
     } finally {

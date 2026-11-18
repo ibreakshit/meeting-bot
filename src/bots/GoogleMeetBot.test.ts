@@ -14,7 +14,7 @@ for (const scenario of [
   { name: 'anonymous guests can submit with the pre-join sign-in tip visible', anonymous: true, devicePrompt: false, admissionPrompt: false, signInTip: true },
   { name: 'signed-in guests dismiss the microphone permission prompt', anonymous: false, devicePrompt: true, admissionPrompt: false },
   { name: 'admitted guests complete the Gemini join confirmation before recording', anonymous: false, devicePrompt: false, admissionPrompt: true },
-  { name: 'anonymous guests activate the German join button with the keyboard', anonymous: true, devicePrompt: false, admissionPrompt: false, joinText: 'Teilnahme erbitten' },
+  { name: 'anonymous guests click the German join button', anonymous: true, devicePrompt: false, admissionPrompt: false, joinText: 'Teilnahme erbitten' },
 ]) test(scenario.name, { timeout: 20_000 }, async t => {
   const portServer = createServer();
   await new Promise<void>(resolve => portServer.listen(0, '127.0.0.1', resolve));
@@ -37,17 +37,12 @@ for (const scenario of [
       <button id="join">${scenario.joinText ?? 'Ask to join anyway'}</button>
       ${scenario.signInTip ? '<aside id="tip"><p>Sign in with your Google account</p><button onclick="this.parentElement.remove()">Got it</button></aside>' : ''}
       <script>
-      let tabNavigations = 0;
-      const keyboardActivations = [];
-      document.addEventListener('keydown', event => {
-        if (event.key === 'Tab') tabNavigations++;
-        if (event.key === ' ' && event.target.matches('button')) keyboardActivations.push(event.target.id);
-      }, true);
+      let mouseMoves = 0;
+      document.addEventListener('mousemove', () => mouseMoves++, true);
       document.addEventListener('click', event => {
         if (['join', 'confirm'].includes(event.target.id)) {
           document.body.dataset[event.target.id + 'Activation'] = JSON.stringify({
-            trusted: event.isTrusted, detail: event.detail,
-            viaSpace: keyboardActivations.includes(event.target.id), tabNavigations,
+            trusted: event.isTrusted, detail: event.detail, mouseMoves,
           });
         }
       }, true);
@@ -84,9 +79,8 @@ for (const scenario of [
     for (const button of scenario.admissionPrompt ? ['join', 'confirm'] : ['join']) {
       const activation = JSON.parse(await page.locator('body').getAttribute(`data-${button}-activation`) ?? '{}');
       assert.equal(activation.trusted, true, `${button} must receive a trusted activation`);
-      assert.equal(activation.detail, 0, `${button} must be activated without a mouse click`);
-      assert.equal(activation.viaSpace, true, `${button} must be activated with Space`);
-      assert.ok(activation.tabNavigations > 0, `${button} must be reached using Tab`);
+      assert.equal(activation.detail, 1, `${button} must be activated with a mouse click`);
+      assert.ok(activation.mouseMoves > 5, `${button} must be reached along a cursor path`);
     }
   };
   bot.dismissPostJoinPrompts = () => Promise.resolve();
@@ -102,31 +96,4 @@ for (const scenario of [
   assert.equal(await page.locator('body').getAttribute('data-guest-name'), scenario.anonymous ? 'Meeting assistant' : '');
   await page.close();
   await connection.close();
-});
-
-test('keyboard joining rejects disabled or unreachable buttons without activating other controls', { timeout: 20_000 }, async t => {
-  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
-  t.after(() => browser.close());
-  for (const disabled of [true, false]) {
-    const page = await browser.newPage();
-    await page.setContent(`
-      <input autofocus><button id="other">Other action</button>
-      <button id="join" ${disabled ? 'disabled' : ''}>Ask to join</button>
-      <script>
-        document.body.dataset.activations = '0';
-        document.addEventListener('click', () => document.body.dataset.activations++);
-        document.addEventListener('keydown', event => { if (event.key === 'Tab') event.preventDefault(); });
-      </script>
-    `);
-    await page.locator('input').focus();
-    const bot = new GoogleMeetBot(createLogger({ silent: true }), 'keyboard-join-guard') as unknown as {
-      page: typeof page;
-      pressJoinButtonWithKeyboard(button: ReturnType<typeof page.locator>): Promise<void>;
-    };
-    bot.page = page;
-    await assert.rejects(bot.pressJoinButtonWithKeyboard(page.locator('#join')),
-      disabled ? /join button is disabled/ : /Unable to focus/);
-    assert.equal(await page.locator('body').getAttribute('data-activations'), '0');
-    await page.close();
-  }
 });

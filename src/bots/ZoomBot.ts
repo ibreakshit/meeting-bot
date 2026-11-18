@@ -15,6 +15,7 @@ import { Logger } from 'winston';
 import { handleWaitingAtLobbyError } from './MeetBotBase';
 import { ZOOM_REQUEST_DENIED } from '../constants';
 import { installZoomNoticeDismissal } from '../lib/zoomNotifications';
+import { humanClick, humanMoveTo, humanType } from '../lib/humanCursor';
 
 abstract class BotBase extends AbstractMeetBot {
   protected page: Page;
@@ -100,7 +101,7 @@ export class ZoomBot extends BotBase {
       await acceptCookies.waitFor({ timeout: 2500 });
 
       this._logger.info('Clicking the "Accept Cookies" button...', await acceptCookies.count());
-      await acceptCookies.click({ force: true });
+      await humanClick(acceptCookies, { force: true });
       
     } catch (error) {
       this._logger.info('Unable to accept cookies...', error);
@@ -126,14 +127,14 @@ export class ZoomBot extends BotBase {
 
         if (launchDownloadVisible) {
           this._logger.info('Click on Download Now...');
-          await launchDownloadGetByRole.click({ force: true });
+          await humanClick(launchDownloadGetByRole, { force: true });
         }
 
         const joinFromBrowser = this.page.locator('a', { hasText: 'Join from your browser' }).first();
         await joinFromBrowser.waitFor({ timeout: 4000 });
 
         if (await joinFromBrowser.isVisible({ timeout: 500 }).catch(() => false)) {
-          await joinFromBrowser.click({ force: true });
+          await humanClick(joinFromBrowser, { force: true });
           return true;
         }
         else {
@@ -288,7 +289,7 @@ export class ZoomBot extends BotBase {
     for (const question of ['Do you want people to see you in the meeting?', 'Do you want people to hear you in the meeting?']) {
       await this.page.addLocatorHandler(prejoin.getByText(question, { exact: true }), async () => {
         this._logger.info('Continuing past Zoom microphone and camera prompt...', { question });
-        await prejoin.getByText('Continue without microphone and camera', { exact: true }).click();
+        await humanClick(prejoin.getByText('Continue without microphone and camera', { exact: true }));
       });
     }
 
@@ -296,13 +297,13 @@ export class ZoomBot extends BotBase {
     await iframe.waitForSelector('input[type="text"]', { timeout: 60000 });
 
     this._logger.info('Filling the input field with the name...');
-    await iframe.fill('input[type="text"]', name ? name : 'ScreenApp Notetaker');
+    await humanType(iframe.locator('input[type="text"]').first(), name ? name : 'ScreenApp Notetaker');
 
     if (params.thumbnailId) await configureBotCameraControls(iframe, 'zoom', this._logger);
     this._logger.info('Clicking the "Join" button...');
     const joinButton = iframe.locator('button', { hasText: 'Join' }).first();
     await joinButton.waitFor({ timeout: 15000 });
-    await joinButton.click();
+    await humanClick(joinButton, { timeout: 15000 });
 
     // Wait in waiting room
     try {
@@ -385,7 +386,7 @@ export class ZoomBot extends BotBase {
     let stopDismissingNotices: (() => Promise<void>) | undefined;
     try {
       // Clear hover tooltips and dismiss advisory overlays before the first captured frame.
-      await this.page.mouse.move(0, 0);
+      await humanMoveTo(this.page, { x: 0, y: 0 });
       stopDismissingNotices = await installZoomNoticeDismissal(iframe);
     } catch (error) {
       this._logger.warn('Unable to install Zoom advisory notification cleanup', { error });

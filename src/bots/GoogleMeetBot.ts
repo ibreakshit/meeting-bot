@@ -16,7 +16,7 @@ import createBrowserContext, { isExternalBrowserContext } from '../lib/chromium'
 import { GOOGLE_LOBBY_MODE_HOST_TEXT, GOOGLE_REQUEST_DENIED, GOOGLE_REQUEST_TIMEOUT } from '../constants';
 import { getRecordingMimeTypesForExtension } from '../lib/recording';
 import { getGoogleMeetDisplayName } from '../util/googleMeetDisplayName';
-import type { Locator } from 'playwright';
+import { humanClick, humanType } from '../lib/humanCursor';
 
 export class GoogleMeetBot extends MeetBotBase {
   private _logger: Logger;
@@ -88,24 +88,6 @@ export class GoogleMeetBot extends MeetBotBase {
     }
   }
 
-  private async pressJoinButtonWithKeyboard(button: Locator): Promise<void> {
-    await this.page.bringToFront();
-    await button.waitFor({ state: 'visible', timeout: 5000 });
-    if (!await button.isEnabled()) throw new Error('Google Meet join button is disabled');
-
-    // Follow the tab order and verify focus before activating with Space.
-    for (let tabPresses = 0; tabPresses < 50; tabPresses++) {
-      await this.page.keyboard.press('Tab');
-      if (await button.evaluate(element => element === document.activeElement)) {
-        if (!await button.isEnabled()) throw new Error('Google Meet join button is disabled');
-        await this.page.keyboard.press('Space');
-        return;
-      }
-    }
-
-    throw new Error('Unable to focus the Google Meet join button using Tab');
-  }
-
   private async joinMeeting({ url, name, bearerToken, thumbnailId, teamId, userId, eventId, botId, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
     this._logger.info('Launching browser...');
 
@@ -129,7 +111,7 @@ export class GoogleMeetBot extends MeetBotBase {
       const hasContinuePrompt = await continueWithoutDevicesButton.isVisible({ timeout }).catch(() => false);
       if (hasContinuePrompt) {
         this._logger.info('Clicking Continue without microphone and camera button...');
-        await continueWithoutDevicesButton.click();
+        await humanClick(continueWithoutDevicesButton);
         return true;
       }
 
@@ -236,22 +218,23 @@ export class GoogleMeetBot extends MeetBotBase {
         if (thumbnailId) await configureBotCameraControls(this.page, 'google', this._logger);
         const nameInput = this.page.locator(nameInputSelector).first();
         if (await nameInput.isVisible()) {
-          this._logger.info('Filling the guest name field...');
-          await nameInput.fill(displayName);
+          this._logger.info('Typing the guest name...');
+          await humanType(nameInput, displayName);
         } else {
           this._logger.info('Using the signed-in Google profile name...');
         }
         
         await retryActionWithWait(
-          'Activating the Google Meet join button with Tab and Space',
+          'Clicking the Google Meet join button',
           async () => {
             const signInTip = this.page.getByText('Sign in with your Google account', { exact: true });
             const dismissTip = this.page.getByRole('button', { name: 'Got it', exact: true });
             if (await signInTip.isVisible() && await dismissTip.count() === 1 && await dismissTip.isVisible()) {
-              await dismissTip.click({ timeout: 3000 });
+              await humanClick(dismissTip, { timeout: 3000 });
             }
-            await this.pressJoinButtonWithKeyboard(joinButton);
-            this._logger.info('Activated Google Meet join button with Tab and Space...', {
+            await this.page.bringToFront();
+            await humanClick(joinButton);
+            this._logger.info('Clicked Google Meet join button...', {
               joinRequestAttempt,
               maxJoinRequestAttempts
             });
@@ -274,6 +257,7 @@ export class GoogleMeetBot extends MeetBotBase {
         let redirectedFromMeetUrl: string | undefined;
         let redirectedFromMeetBodyText: string | undefined;
         let lobbyRequestTimedOut = false;
+        let confirmingAdmission = false;
 
         const waitAtLobbyPromise = new Promise<boolean>((resolveWaiting) => {
           waitTimeout = setTimeout(() => {
@@ -288,8 +272,15 @@ export class GoogleMeetBot extends MeetBotBase {
               const joinConfirmation = this.page.getByRole('dialog').getByRole('button', {
                 name: /^(Join now|Jetzt teilnehmen)$/i,
               }).first();
+              if (confirmingAdmission) return;
               if (await joinConfirmation.isVisible()) {
-                await this.pressJoinButtonWithKeyboard(joinConfirmation);
+                // The cursor path can outlast the 2s poll; overlapping moves would garble it.
+                confirmingAdmission = true;
+                try {
+                  await humanClick(joinConfirmation);
+                } finally {
+                  confirmingAdmission = false;
+                }
                 this._logger.info('Confirmed Google Meet admission dialog...', { userId, teamId });
                 return;
               }
@@ -586,7 +577,7 @@ export class GoogleMeetBot extends MeetBotBase {
 
         for (const btn of visibleButtons) {
           try {
-            await btn.click({ timeout: 5000 });
+            await humanClick(btn);
             gotItButtonsClicked++;
             this._logger.info(`Clicked a "Got it" button #${gotItButtonsClicked}`);
             
