@@ -21,6 +21,16 @@ function state(events: CalendarEvent[] = [event()], calendars?: CalendarState[])
     calendars: calendars || [calendar(events)], overrides: {}, overrideRevision: 0 };
 }
 const groups = (s = state(), instant = now) => buildGroups(s, instant, 300, ['alias@example.test']);
+
+test('only confirmed owner attendance authorizes a calendar job, including overrides', () => {
+  for (const responseStatus of ['tentative', 'needsAction', 'declined', undefined]) {
+    const meeting = event('unconfirmed', 60, 3600, { attendees: [{ email: 'owner@example.test', responseStatus }, { email: 'guest@example.test' }] });
+    const s = state([meeting]);
+    s.overrides[instanceKey(meeting)] = { mode: 'join', revision: 1 };
+    assert.equal(groups(s)[0].join, false, String(responseStatus));
+  }
+  assert.equal(groups(state([event('organized', 60, 3600, { organizer: { email: 'owner@example.test' }, attendees: [{ email: 'guest@example.test' }] })]))[0].join, true);
+});
 function dispatch(group: MeetingGroup, extra: Partial<DispatchRecord> = {}): DispatchRecord {
   const primary = group.primary;
   assert.ok(primary?.link);
@@ -29,6 +39,14 @@ function dispatch(group: MeetingGroup, extra: Partial<DispatchRecord> = {}): Dis
   return { botId: 'bot-a', payload, serializedPayload: JSON.stringify(payload), memberInstanceKeys: group.memberKeys,
     pushedAt: now, scheduledStart: group.start, scheduledEnd: group.end, state: 'queued', ...extra };
 }
+
+test('pending calendar job is removed when attendance is no longer confirmed', () => {
+  const original = groups()[0];
+  const queued = dispatch(original);
+  const changed = event('a', 60, 3600, { attendees: [{ email: 'owner@example.test', responseStatus: 'needsAction' }, { email: 'guest@example.test' }] });
+  const actions = plan(groups(state([changed])), [queued], new Set([queued.serializedPayload]), now, 60);
+  assert.equal(actions[0]?.type, 'remove');
+});
 
 test('link priority ignores unsupported entries and preserves full decoded URLs', () => {
   const link = extractJoinLink(event('a', 60, 3600, { conferenceData: { entryPoints: [
@@ -58,14 +76,14 @@ test('one-off and recurring identities survive moves and normalize original UTC 
 
 test('owner RSVP combines same occurrence copies and ignores shared self flags', () => {
   const declined = event('a', 60, 3600, { attendees: [{ email: 'OWNER@example.test', responseStatus: 'declined' }, { email: 'guest@example.test' }] });
-  const accepted = event('a', 60, 3600, { attendees: [{ email: 'alias@example.test', responseStatus: 'tentative' }, { email: 'guest@example.test' }] });
+  const accepted = event('a', 60, 3600, { attendees: [{ email: 'alias@example.test', responseStatus: 'accepted' }, { email: 'guest@example.test' }] });
   assert.equal(groups(state([], [calendar([declined]), calendar([accepted], { id: 'other' })]))[0].join, true);
   assert.equal(groups(state([declined]))[0].reason, 'declined');
   const shared = event('shared', 60, 3600, { attendees: [{ email: 'other@example.test', self: true, responseStatus: 'declined' }] });
-  assert.equal(groups(state([shared]))[0].join, true);
-  assert.equal(groups(state([event('a', 60, 3600, { attendees: [{ email: 'owner@example.test' }, { email: 'alias@example.test' }, { email: 'room@example.test', resource: true }] })]))[0].reason, 'alone');
-  assert.equal(groups(state([event('a', 60, 3600, { attendees: [], attendeesOmitted: true })]))[0].reason, 'attendees unavailable');
-  assert.equal(groups(state([event('a', 60, 3600, { attendees: [], organizer: { email: 'guest@example.test' } })]))[0].join, true);
+  assert.equal(groups(state([shared]))[0].join, false);
+  assert.equal(groups(state([event('a', 60, 3600, { attendees: [{ email: 'owner@example.test', responseStatus: 'accepted' }, { email: 'alias@example.test' }, { email: 'room@example.test', resource: true }] })]))[0].reason, 'alone');
+  assert.equal(groups(state([event('a', 60, 3600, { attendees: [], attendeesOmitted: true })]))[0].reason, 'unconfirmed');
+  assert.equal(groups(state([event('a', 60, 3600, { attendees: [], organizer: { email: 'guest@example.test' } })]))[0].join, false);
 });
 
 test('source freshness expires exactly at cutoff and known access loss bypasses grace', () => {
@@ -100,7 +118,7 @@ test('group overrides use latest revision, reset survives merges, Join cannot by
   assert.equal(groups(s)[0].join, true);
   s.calendars[0].events = [event('a', 60, 3600, { attendees: [] })];
   s.overrides[instanceKey(event('a'))] = { mode: 'join', revision: 4 };
-  assert.equal(groups(s)[0].join, true);
+  assert.equal(groups(s)[0].join, false);
   for (const patch of [{ status: 'cancelled' }, { hangoutLink: 'https://unsupported.test/x' }, { start: { date: '2026-11-01' } }, { end: { dateTime: iso(0) } }]) {
     s.calendars[0].events = [event('a', 60, 3600, patch)];
     assert.equal(groups(s)[0].join, false);
@@ -233,7 +251,7 @@ test('blocked group merges attach new identities without dropping historical key
 
 test('known resource organizer does not satisfy the person check', () => {
   const result = groups(state([event('a', 60, 3600, { organizer: { email: 'room@example.test' },
-    attendees: [{ email: 'owner@example.test' }, { email: 'room@example.test', resource: true }] })]))[0];
+    attendees: [{ email: 'owner@example.test', responseStatus: 'accepted' }, { email: 'room@example.test', resource: true }] })]))[0];
   assert.equal(result.reason, 'alone');
 });
 

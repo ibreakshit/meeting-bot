@@ -27,6 +27,8 @@ export function decide(event: CalendarEvent, occurrenceCopies: CalendarEvent[], 
     .filter(attendee => attendee.email && owners.has(normalizeEmail(attendee.email)))
     .map(attendee => attendee.responseStatus).filter((response): response is string => Boolean(response)));
   if (responses.length && responses.every(response => response === 'declined')) return { join: false, reason: 'declined' };
+  const ownerOrganizes = occurrenceCopies.some(copy => copy.organizer?.email && owners.has(normalizeEmail(copy.organizer.email)));
+  if (!responses.includes('accepted') && !ownerOrganizes) return { join: false, reason: 'unconfirmed' };
   const others = new Set((event.attendees || []).filter(attendee => !attendee.resource && attendee.email && !owners.has(normalizeEmail(attendee.email)))
     .flatMap(attendee => attendee.email ? [normalizeEmail(attendee.email)] : []));
   const organizer = event.organizer?.email && normalizeEmail(event.organizer.email);
