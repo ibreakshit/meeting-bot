@@ -118,10 +118,17 @@ export class GoogleMeetBot extends MeetBotBase {
       return false;
     };
 
+    // Anonymous guests may first have to choose between guest and sign-in before the name field appears.
+    const continueAsGuestButton = this.page.getByRole('button', { name: /^Continue as guest$/i }).first();
     const waitForPreJoinReady = async () => {
       await clickContinueWithoutDevicesIfPresent();
       // Signed-in profiles show a join button without an editable guest name.
-      await this.page.locator(nameInputSelector).or(joinButton).first().waitFor({ state: 'visible', timeout: 15000 });
+      await this.page.locator(nameInputSelector).or(joinButton).or(continueAsGuestButton).first().waitFor({ state: 'visible', timeout: 15000 });
+      if (await continueAsGuestButton.isVisible()) {
+        this._logger.info('Clicking Continue as guest...');
+        await humanClick(continueAsGuestButton);
+        await this.page.locator(nameInputSelector).first().waitFor({ state: 'visible', timeout: 15000 });
+      }
       await clickContinueWithoutDevicesIfPresent();
     };
 

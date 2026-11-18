@@ -14,6 +14,7 @@ for (const scenario of [
   { name: 'anonymous guests can submit with the pre-join sign-in tip visible', anonymous: true, devicePrompt: false, admissionPrompt: false, signInTip: true },
   { name: 'signed-in guests dismiss the microphone permission prompt', anonymous: false, devicePrompt: true, admissionPrompt: false },
   { name: 'admitted guests complete the Gemini join confirmation before recording', anonymous: false, devicePrompt: false, admissionPrompt: true },
+  { name: 'anonymous guests continue as guest before naming themselves', anonymous: true, devicePrompt: false, admissionPrompt: false, guestChooser: true },
   { name: 'anonymous guests click the German join button', anonymous: true, devicePrompt: false, admissionPrompt: false, joinText: 'Teilnahme erbitten' },
 ]) test(scenario.name, { timeout: 20_000 }, async t => {
   const portServer = createServer();
@@ -30,11 +31,12 @@ for (const scenario of [
     body: `<!doctype html><body>
       <div>signed-in-guest@example.com</div><h1>Ready to join?</h1>
       <input type="text" hidden aria-label="Search">
+      ${scenario.guestChooser ? '<button id="guest" onclick="this.remove(); document.querySelector(\'#prejoin\').hidden = false">Continue as guest</button><div id="prejoin" hidden>' : '<div>'}
       ${scenario.anonymous ? '<label>Your name <input type="text" id="guest-name"></label>' : ''}
       ${scenario.devicePrompt ? '<div id="device-prompt" role="dialog"><button onclick="this.parentElement.remove()">Continue without microphone</button></div>' : ''}
       <button hidden>Ask to join</button>
       <button id="other" onclick="document.body.dataset.unexpectedActivation = 'true'">Other ways to join</button>
-      <button id="join">${scenario.joinText ?? 'Ask to join anyway'}</button>
+      <button id="join">${scenario.joinText ?? 'Ask to join anyway'}</button></div>
       ${scenario.signInTip ? '<aside id="tip"><p>Sign in with your Google account</p><button onclick="this.parentElement.remove()">Got it</button></aside>' : ''}
       <script>
       let mouseMoves = 0;
