@@ -240,7 +240,7 @@ export class GoogleMeetBot extends MeetBotBase {
               await humanClick(dismissTip, { timeout: 3000 });
             }
             await this.page.bringToFront();
-            await humanClick(joinButton);
+            await humanClick(joinButton, { timeout: 5000 });
             this._logger.info('Clicked Google Meet join button...', {
               joinRequestAttempt,
               maxJoinRequestAttempts
@@ -584,7 +584,7 @@ export class GoogleMeetBot extends MeetBotBase {
 
         for (const btn of visibleButtons) {
           try {
-            await humanClick(btn);
+            await humanClick(btn, { timeout: 5000 });
             gotItButtonsClicked++;
             this._logger.info(`Clicked a "Got it" button #${gotItButtonsClicked}`);
             

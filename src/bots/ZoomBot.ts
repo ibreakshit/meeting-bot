@@ -15,7 +15,7 @@ import { Logger } from 'winston';
 import { handleWaitingAtLobbyError } from './MeetBotBase';
 import { ZOOM_REQUEST_DENIED } from '../constants';
 import { installZoomNoticeDismissal } from '../lib/zoomNotifications';
-import { humanClick, humanMoveTo, humanType } from '../lib/humanCursor';
+import { humanClick, humanDismiss, humanMoveTo, humanType } from '../lib/humanCursor';
 
 abstract class BotBase extends AbstractMeetBot {
   protected page: Page;
@@ -291,7 +291,7 @@ export class ZoomBot extends BotBase {
     for (const question of ['Do you want people to see you in the meeting?', 'Do you want people to hear you in the meeting?']) {
       await this.page.addLocatorHandler(prejoin.getByText(question, { exact: true }), async () => {
         this._logger.info('Continuing past Zoom microphone and camera prompt...', { question });
-        await humanClick(prejoin.getByText('Continue without microphone and camera', { exact: true }));
+        await humanDismiss(prejoin.getByText('Continue without microphone and camera', { exact: true }));
       });
     }
 
