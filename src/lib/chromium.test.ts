@@ -137,7 +137,8 @@ after(async () => {
   }
   server?.closeAllConnections();
   if (server) await new Promise<void>(resolve => server.close(() => resolve()));
-  if (directory) await rm(directory, { recursive: true, force: true });
+  // Chrome helpers can still flush the profile just after the main process exits.
+  if (directory) await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 for (const provider of ['google', 'zoom', 'microsoft'] as const) {
