@@ -21,6 +21,7 @@ const server = createServer();
 let directory: string;
 let source: Buffer;
 let uploadStatus = 200;
+const processing: string[] = [];
 const uploads: { key: string; contentType: string; body: Buffer }[] = [];
 let completion: { metadata: { contentType: string; storage: { key: string } } } | undefined;
 
@@ -43,7 +44,11 @@ before(async () => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = Buffer.concat(chunks);
-    if (request.url === '/completed') {
+    if (request.url === '/v2/meeting/app/bot/processing') {
+      assert.equal(request.headers.authorization, 'Bearer fixture');
+      processing.push(JSON.parse(body.toString()).stage);
+      response.writeHead(200).end('{}');
+    } else if (request.url === '/completed') {
       completion = JSON.parse(body.toString());
       response.writeHead(200).end('{}');
     } else {
@@ -55,6 +60,7 @@ before(async () => {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
   const origin = `http://127.0.0.1:${address.port}`;
+  config.authBaseUrlV2 = origin + '/v2';
   config.uploaderType = 's3'; config.uploaderFileExtension = '.webm';
   config.s3CompatibleStorage = { endpoint: origin, region: 'us-east-1', accessKeyId: 'fixture', secretAccessKey: 'fixture', bucket: 'recordings', forcePathStyle: true };
   config.notifyRedisEnabled = false; config.notifyWebhookEnabled = true; config.notifyWebhookUrl = origin + '/completed';
@@ -77,7 +83,9 @@ async function uploader(extension = '.webm', data = source) {
 
 test('before-upload processing publishes a smaller 720p MP4 with audio and matching completion metadata', async () => {
   const { instance, input } = await uploader();
+  processing.length = 0;
   assert.equal(await instance.uploadRecordingToRemoteStorage(), true);
+  assert.deepEqual(processing, ['encoding', 'uploading']);
   const uploaded = uploads[uploads.length - 1];
   assert.equal(uploaded.contentType, 'video/mp4');
   assert.match(uploaded.key, /\.mp4$/);
@@ -100,7 +108,9 @@ test('failed upload retains original and candidate, then retry cleans both after
   const { instance, input } = await uploader();
   uploadStatus = 403;
   try {
+    processing.length = 0;
     assert.equal(await instance.uploadRecordingToRemoteStorage(), false);
+    assert.deepEqual(processing, ['encoding', 'uploading', 'failed']);
     assert.equal(digest(await readFile(input)), digest(source));
     const files = await readdir(stagingDirectory);
     assert.equal(files.length, 2);

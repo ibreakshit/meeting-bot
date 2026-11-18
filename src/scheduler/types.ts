@@ -168,6 +168,7 @@ export interface Outcome {
 
 export interface DispatchRecord {
   botId: string;
+  meetingTitle?: string;
   source?: 'manual';
   roomId?: string;
   payload: JobPayload;

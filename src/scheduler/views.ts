@@ -126,6 +126,13 @@ button.primary:hover,.button.primary:hover { background:#244dc7 }
 .history-entry:first-child { padding-top:0 }
 .history-entry h2 { font-size:19px; overflow-wrap:anywhere; margin-bottom:8px }
 .history-entry .execution-id { font-size:12px; overflow-wrap:anywhere }
+.history-entry .failure-summary { margin:12px 0; max-width:78ch }
+.history-entry .technical-details { color:var(--muted) }
+.history-entry .technical-details summary { width:fit-content }
+.history-entry .diagnostic-trace { max-height:320px; overflow:auto; color:var(--text) }
+.history-entry .attempt-list { padding-left:22px; font-size:14px }
+.history-entry .attempt-list li { padding:6px 0 }
+.history-entry .attempt-list time { display:block; color:var(--muted); font-size:12px }
 details { margin-top:14px }
 summary { cursor:pointer; font-size:14px; font-weight:550 }
 .logs { font:13px/1.7 ui-monospace,monospace; white-space:pre-wrap; overflow-wrap:anywhere; padding:14px; background:var(--surface); border:1px solid var(--line); border-radius:6px; margin-top:12px }
@@ -281,7 +288,8 @@ const script = (basePath: string, refresh: boolean) => `
 const timeFormats = {
   time: { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' },
   day: { month: 'short', day: 'numeric' },
-  date: { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }
+  date: { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' },
+  datetime: { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }
 };
 for (const time of document.querySelectorAll('time[data-format]')) {
   time.textContent = new Intl.DateTimeFormat(undefined, timeFormats[time.dataset.format]).format(new Date(time.dateTime));
@@ -466,7 +474,9 @@ function recordingLink(dispatch: DispatchRecord, config?: SchedulerConfig, meeti
   const action = meetingView
     ? `<button type="button" data-meeting-bot="${escape(dispatch.botId)}" aria-haspopup="dialog" aria-controls="transcript-drawer">View meeting</button>`
     : `<a class="button" href="${escape(config?.basePath || '')}/recordings/${encodeURIComponent(dispatch.botId)}/download">Download recording</a>`;
-  return `<p>${action}${typeof recording.duration === 'number' ? ` <small>${escape(Math.round(recording.duration))} seconds</small>` : ''}${!dispatch.outcome ? ' <small>Authoritative result unavailable</small>' : ''}</p>`;
+  const seconds = typeof recording.duration === 'number' ? Math.round(recording.duration) : undefined;
+  const duration = seconds === undefined ? '' : seconds >= 60 ? `${Math.floor(seconds / 60)} min ${seconds % 60} sec` : `${seconds} sec`;
+  return `<p>${action}${duration ? ` <small>${escape(duration)}</small>` : ''}${!dispatch.outcome ? ' <small>Authoritative result unavailable</small>' : ''}</p>`;
 }
 function agendaTime(timestamp: number, format: 'time' | 'day' | 'date'): string {
   const options: Intl.DateTimeFormatOptions = format === 'time' ? { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' } : format === 'day' ? { month: 'short', day: 'numeric' } : { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' };
@@ -484,6 +494,7 @@ const meetingReasons: Record<string, string> = {
   'invalid event time': 'This event has an invalid start or end time.',
   cancelled: 'This meeting was cancelled.',
   declined: 'You declined this meeting.',
+  unconfirmed: 'You have not accepted this meeting.',
   'attendees unavailable': 'Attendee information is unavailable.',
   alone: 'No other participants were found.',
   'calendar unavailable': 'The calendar is unavailable or waiting for a fresh sync.',
@@ -516,9 +527,70 @@ export function renderSchedule(state: SchedulerState, view: RuntimeView, dispatc
   const empty = `<section class="empty">${icon('calendar')}<h2>No upcoming meetings</h2><p>Your next 24 hours are clear. Meetings from watched calendars appear here automatically.</p><a class="button" href="${escape(basePath)}/accounts">Manage calendars</a></section>`;
   return layout('Schedule', '', `<div class="schedule-layout"><section class="agenda" aria-label="Upcoming meetings"><div class="intro"><h1>Schedule</h1><p class="page-date">${agendaTime(now, 'date')}</p></div><div class="agenda-content">${banners}${manual ? `<section aria-label="Manual invitations"><h2>Manual invitations</h2>${manual}</section>` : ''}<div class="agenda-heading"><h2>Next 24 hours <span class="muted">· <span data-timezone>UTC</span></span></h2><small>Refreshes every 30 seconds</small></div>${rows || empty}${retained ? `<h2 class="retained-heading">Ongoing and retained executions</h2>${retained}` : ''}</div></section><aside class="worker-panel" aria-label="Bot availability"><h2>Bot availability</h2><ul class="worker-list">${workers || '<li class="muted">No workers configured</li>'}</ul><div class="queue-summary" aria-label="Queued meetings"><strong>${view.queueDepth}</strong><span>meetings queued</span></div><p class="queue-explanation">When all workers are busy, additional meetings wait in the queue until a worker is free.</p><a class="button primary" href="${escape(basePath)}/accounts">Manage calendars</a><p class="muted capacity-note">${config.workers.length} ${config.workers.length === 1 ? 'worker' : 'workers'} configured · One meeting per worker</p></aside></div>`, true, basePath);
 }
+function historyWhen(timestamp: number): string {
+  return `<time datetime="${escape(new Date(timestamp).toISOString())}" data-format="datetime">${when(timestamp)}</time>`;
+}
+
+function historyResult(dispatch: DispatchRecord, config?: SchedulerConfig): { label: string; description: string; positive?: boolean } {
+  if (dispatch.outcome?.conflict) return { label: 'Conflicting results', description: 'The worker reported conflicting outcomes. The meeting result needs checking.' };
+  if (dispatch.outcome?.status === 'completed') return { label: 'Recording uploaded', description: '', positive: true };
+  if (dispatch.outcome?.status === 'failed') {
+    const error = dispatch.outcome.error;
+    if (error?.type === 'RecordingUploadFailedError') {
+      const recording = dispatch.recording;
+      // A later, verified upload can attach a recording without erasing the original failure evidence.
+      const recovered = recording && !recording.locationConflict && recording.storage?.provider === 's3' &&
+        recording.storage.bucket && recording.storage.key && (!config || recording.storage.bucket === config.s3.bucket) &&
+        Date.parse(recording.timestamp) >= Date.parse(dispatch.outcome.timestamp);
+      return recovered
+        ? { label: 'Recording recovered', description: 'The bot recorded the meeting. The upload initially failed, but the recording is now available.', positive: true }
+        : { label: 'Upload failed', description: 'The bot recorded the meeting, but could not upload the video. Check recording storage and the worker’s retained files before retrying the upload.' };
+    }
+    if (/connectOverCDP/i.test(error?.message || '')) return {
+      label: 'Browser unavailable', description: 'The bot could not connect to its browser to join the meeting. Check that the browser service is running and reachable.',
+    };
+    if (error?.type === 'WaitingAtLobbyRetryError' || /could not enter the meeting/i.test(error?.message || '')) return {
+      label: 'Could not join', description: 'The bot could not enter the meeting before the join timeout. Check the meeting link and guest admission settings.',
+    };
+    if (error?.type === 'TimeoutError') return {
+      label: 'Meeting controls timed out', description: 'The meeting page did not complete a required action in time. Technical details show which button or field the bot was waiting for.',
+    };
+    return { label: 'Meeting failed', description: 'The meeting job did not complete. Open technical details for the reported error.' };
+  }
+  if (dispatch.state === 'removed') return { label: 'Not joined', description: 'The queued job was removed before the bot joined. The reason is recorded in technical details.' };
+  if (dispatch.state === 'picked_up') return { label: 'Picked up', description: 'A worker picked up this meeting. A final result has not arrived yet.' };
+  if (dispatch.state === 'queued') return { label: 'Queued', description: 'Waiting for an available worker.' };
+  return { label: 'Outcome unknown', description: 'A final result has not been confirmed. Check the worker before retrying this meeting.' };
+}
+
+function historyEntry(dispatch: DispatchRecord, config?: SchedulerConfig): string {
+  const provider = { google: 'Google Meet', microsoft: 'Microsoft Teams', zoom: 'Zoom' }[dispatch.payload.provider];
+  const result = historyResult(dispatch, config);
+  const error = dispatch.outcome?.error;
+  const statusNames = { processing: 'Started', joined: 'Joined meeting', finished: 'Finished', failed: 'Failed' };
+  const attempts = dispatch.attempts?.length ? `<details><summary>Attempt history (${dispatch.attempts.length})</summary><p class="notice">These are worker progress reports. The result above reflects upload completion or the final failure.</p><ol class="attempt-list">${dispatch.attempts.map(attempt => `<li>${historyWhen(attempt.receivedAt)}${escape(attempt.status.map(status => statusNames[status] || status).join(' → '))}</li>`).join('')}</ol></details>` : '';
+  const logs = dispatch.logs?.length ? `<details><summary>Execution logs (${dispatch.logs.length})</summary>${dispatch.logs.map(log => `<p class="muted">${historyWhen(log.receivedAt)} · ${escape(log.level)} · ${escape(log.category)} / ${escape(log.subCategory)}</p><pre class="logs diagnostic-trace" tabindex="0" aria-label="Execution log">${diagnostic(log.message, config)}</pre>`).join('')}</details>` : '';
+  const latePickup = dispatch.firstObservedAt !== undefined && dispatch.firstObservedAt >= dispatch.scheduledEnd ? dispatch.firstObservedAt : undefined;
+  return `<article class="history-entry">
+    <h2>${escape(dispatch.meetingTitle?.trim() || (dispatch.source === 'manual' ? manualTitle(dispatch) : provider))}</h2>
+    <p class="muted">${historyWhen(dispatch.scheduledStart)} - ${historyWhen(dispatch.scheduledEnd)}</p>
+    <div class="detail">${badge(result.label, result.positive)}${dispatch.workerId ? `<span>Worker ${escape(dispatch.workerId)}</span>` : ''}</div>
+    ${result.description ? `<p class="failure-summary">${escape(result.description)}</p>` : ''}
+    ${latePickup !== undefined ? `<p class="banner">Possible late pickup: the worker was first observed holding this job at ${historyWhen(latePickup)}. Exact pickup time is unknown.</p>` : ''}
+    ${dispatch.recording ? recordingLink(dispatch, config, true) : `<p><button type="button" data-meeting-bot="${escape(dispatch.botId)}" aria-haspopup="dialog" aria-controls="transcript-drawer">View meeting</button></p>`}
+    <details class="technical-details"><summary>Technical details</summary>
+      <p class="execution-id">Bot ID: ${escape(dispatch.botId)}${dispatch.payload.eventId ? `<br>Calendar event ID: ${escape(dispatch.payload.eventId)}` : ''}</p>
+      ${dispatch.outcome ? `<p>Result reported: ${historyWhen(Date.parse(dispatch.outcome.timestamp))}</p>` : ''}
+      ${dispatch.reason ? `<p>${diagnostic(dispatch.reason, config)}</p>` : ''}
+      ${dispatch.calendarChangedAt ? `<p>Calendar changed after pickup: ${escape(dispatch.changedFields?.join(', '))}. Detected ${historyWhen(dispatch.calendarChangedAt)}. The original target and schedule were retained.</p>` : ''}
+      ${error ? `<p>${diagnostic(error.type || 'Error', config)}</p><pre class="logs diagnostic-trace" tabindex="0" aria-label="Technical error">${diagnostic(error.message, config)}</pre>` : ''}
+    </details>${attempts}${logs}
+  </article>`;
+}
+
 export function renderHistory(dispatches: DispatchRecord[], config?: SchedulerConfig, archives: Array<{ kind: string }> = []): string {
   const cutoff = Date.now() - 7 * 86400000;
-  const rows = dispatches.filter(dispatch => dispatch.pushedAt >= cutoff).sort((a, b) => b.pushedAt - a.pushedAt).map(dispatch => `<article class="history-entry"><h2>${escape(dispatch.source === 'manual' ? manualTitle(dispatch) : dispatch.payload.eventId || 'Meeting execution')}</h2><p class="muted">${when(dispatch.scheduledStart)} - ${when(dispatch.scheduledEnd)}</p>${dispatchDetails(dispatch, config, true)}${dispatch.attempts?.length ? `<details><summary>${dispatch.attempts.length} attempt reports</summary><p class="notice">Attempt reports do not establish upload success or permanent failure.</p>${dispatch.attempts.map(attempt => `<p>${when(attempt.receivedAt)}: ${escape(attempt.status.join(' → '))}</p>`).join('')}</details>` : ''}${dispatch.logs?.length ? `<details><summary>Lobby and execution logs</summary><div class="logs">${dispatch.logs.map(log => `${when(log.receivedAt)} [${escape(log.level)}] ${diagnostic(log.message, config)}`).join('\n')}</div></details>` : ''}</article>`).join('');
+  const rows = dispatches.filter(dispatch => dispatch.pushedAt >= cutoff).sort((a, b) => b.pushedAt - a.pushedAt).map(dispatch => historyEntry(dispatch, config)).join('');
   // Render only known diagnostic labels and counts; archive payloads stay server-side.
   const labels: Record<string, string> = { 'malformed result': 'Malformed results', 'unscheduled result': 'Unscheduled results', attempts: 'Unscheduled attempt reports', logs: 'Unscheduled logs', recording: 'Unscheduled recordings' };
   const counts = new Map<string, number>();

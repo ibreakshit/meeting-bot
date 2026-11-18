@@ -1,3 +1,4 @@
+import { createApiV2 } from '../util/auth';
 import { Logger } from 'winston';
 import {
   createPartUploadUrl,
@@ -571,6 +572,16 @@ class DiskUploader implements IUploader {
     }
   }
 
+  private async reportProcessing(stage: 'encoding' | 'uploading' | 'failed'): Promise<void> {
+    try {
+      // Progress is best effort; an unavailable dashboard must not prevent saving a recording.
+      await createApiV2(this._token, config.serviceKey).patch('/meeting/app/bot/processing',
+        { botId: this._botId, stage }, { baseURL: config.authBaseUrlV2, timeout: 3000 });
+    } catch {
+      this._logger.warn('Unable to report recording processing progress', { botId: this._botId, stage });
+    }
+  }
+
   private async finalizeDiskWriting() {
     try {
       await this.waitForWritingFlag();
@@ -598,6 +609,7 @@ class DiskUploader implements IUploader {
       await this.ensureWebmDurationMetadata(filePath);
 
       if (!this.compressedFilePath) {
+        await this.reportProcessing('encoding');
         this.compressedFilePath = await compressRecording(filePath, this._logger);
         if (this.compressedFilePath) this.contentType = 'video/mp4';
         else await this.ensureRequestedContainer(filePath);
@@ -794,6 +806,7 @@ class DiskUploader implements IUploader {
         throw new Error(`Unable to finalise the temp recording file: ${this._userId} ${this._botId}`);
       }
 
+      await this.reportProcessing('uploading');
       let uploadResult = false;
       // Upload recording to configured storage
       if (config.uploaderType === 'screenapp') {
@@ -831,8 +844,10 @@ class DiskUploader implements IUploader {
         }
       }
 
+      if (!uploadResult) await this.reportProcessing('failed');
       return uploadResult;
     } catch (err) {
+      await this.reportProcessing('failed');
       this._logger.info('Unable to upload recording to server...', { error: err, userId: this._userId, teamId: this._teamId });
       return false;
     }

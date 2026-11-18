@@ -209,7 +209,7 @@ export class SchedulerRuntime {
       ...(appearance.thumbnailId ? { thumbnailId: appearance.thumbnailId } : {}),
       timezone: member.timeZone, eventId: member.event.id, botId, teamId: this.config.teamId,
       userId: this.config.userId, bearerToken: this.config.bearerToken };
-    return { botId, payload, serializedPayload: JSON.stringify(payload), memberInstanceKeys: group.memberKeys,
+    return { botId, meetingTitle: member.event.summary?.trim() || undefined, payload, serializedPayload: JSON.stringify(payload), memberInstanceKeys: group.memberKeys,
       pushedAt: this.now(), scheduledStart: group.start, scheduledEnd: group.end, state: 'queued' };
   }
 

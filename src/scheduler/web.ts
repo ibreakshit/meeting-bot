@@ -1,3 +1,4 @@
+import { transcriptJobId } from '../transcription/queue';
 import { createTranscriptHandlers } from './transcripts';
 import type { TranscriptQueue } from '../transcription/queue';
 import type { TranscriptStorage } from '../transcription/storage';
@@ -102,6 +103,16 @@ export function createSchedulerApp(deps: SchedulerWebDependencies) {
   app.get('/v2/meeting/app/bot/thumbnail/:thumbnailId', bearer, serveThumbnail);
   app.patch('/v2/meeting/app/bot/status', bearer, express.json({ limit: '64kb' }), asyncRoute(async (req, res) => { if (!validStatus(req.body)) return res.status(400).json({ error: 'Invalid status report' }); await ledger.addAttempt(req.body); res.json({ success: true }); }));
   app.patch('/v2/meeting/app/bot/log', bearer, express.json({ limit: '64kb' }), asyncRoute(async (req, res) => { if (!validLog(req.body)) return res.status(400).json({ error: 'Invalid log report' }); await ledger.addLog(req.body); res.json({ success: true }); }));
+  app.patch('/v2/meeting/app/bot/processing', bearer, express.json({ limit: '4kb' }), asyncRoute(async (req, res) => {
+    const { botId, stage } = req.body || {};
+    if (typeof botId !== 'string' || !['encoding', 'uploading', 'failed'].includes(stage)) return res.status(400).json({ error: 'Invalid processing report' });
+    const record = (await ledger.listDispatches()).find(item => item.botId === botId);
+    if (!record) return res.status(404).json({ error: 'Meeting unavailable' });
+    const messages: Record<string, string> = { encoding: 'Encoding recording to MP4', uploading: 'Uploading recording', failed: 'Recording processing or upload failed' };
+    await ledger.addLog({ botId, eventId: record.payload.eventId, provider: record.payload.provider,
+      category: 'RecordingProcessing', subCategory: stage, level: stage === 'failed' ? 'error' : 'info', message: messages[stage] });
+    res.json({ success: true });
+  }));
   app.post('/hooks/recording-completed', express.raw({ type: 'application/json', limit: '256kb' }), asyncRoute(async (req, res) => {
     if (!Buffer.isBuffer(req.body) || !constantEqual(req.get('X-Webhook-Signature'), createHmac('sha256', config.webhookSecret).update(req.body).digest('hex'))) return res.status(401).json({ error: 'Unauthorized' });
     let body; try { body = JSON.parse(req.body.toString('utf8')); } catch { return res.status(400).json({ error: 'Invalid recording report' }); }
@@ -196,6 +207,24 @@ export function createSchedulerApp(deps: SchedulerWebDependencies) {
     dashboard.get('/recordings/:botId/transcript', guard, handlers.view);
     dashboard.get('/recordings/:botId/transcript/download', guard, handlers.download);
   }
+  dashboard.get('/recordings/:botId/processing', guard, asyncRoute(async (req, res) => {
+    const record = (await ledger.listDispatches()).find(item => item.botId === req.params.botId);
+    if (!record) return res.status(404).json({ error: 'Meeting unavailable' });
+    const recording = record.recording;
+    const location = recording?.storage;
+    const recordingReady = Boolean(recording && !recording.locationConflict && location?.provider === 's3' && location.bucket === config.s3.bucket && location.key);
+    const stage = record.logs?.filter(log => log.category === 'RecordingProcessing').slice(-1)[0]?.subCategory;
+    // A terminal outcome or lost worker takes precedence over its last progress report.
+    const videoState = recordingReady ? 'ready' : record.outcome?.conflict || record.state === 'unknown' ? 'unknown'
+      : record.outcome?.status === 'failed' || stage === 'failed' ? 'failed'
+        : stage === 'encoding' || stage === 'uploading' ? stage : record.state === 'removed' || record.outcome ? 'unavailable' : 'waiting';
+    const manifest = recordingReady && recording && location?.key && deps.transcriptQueue
+      ? await deps.transcriptQueue.get(transcriptJobId({ botId: record.botId, recordingId: recording.recordingId, bucket: config.s3.bucket, key: location.key })) : null;
+    const pendingState = ['failed', 'unavailable', 'unknown'].includes(videoState) ? 'unavailable' : 'waiting';
+    res.json({ videoState, recordingReady,
+      originalState: manifest?.originalState || (config.transcriptionEnabled ? pendingState : 'unavailable'),
+      correctionState: manifest?.correctionState || (config.transcriptionEnabled ? pendingState : 'unavailable') });
+  }));
   dashboard.get('/recordings/:botId/download', guard, createRecordingDownloadHandler({ config, s3: deps.s3, getRecording: async botId => (await ledger.listDispatches()).find(record => record.botId === botId)?.recording }));
   dashboard.get('/recordings/:botId/video', guard, createRecordingDownloadHandler({ config, s3: deps.s3, disposition: 'inline', getRecording: async botId => (await ledger.listDispatches()).find(record => record.botId === botId)?.recording }));
   dashboard.post('/auth/logout', guard, postGuard, (req, res) => { const base = origin(req); if (!base) return res.status(400).send('Unknown dashboard origin'); clearCookie(res, sessionCookieName, base); res.json({ success: true }); });

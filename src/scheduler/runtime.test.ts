@@ -150,6 +150,24 @@ test('startup never joins persisted snapshots, then fresh polling enqueues due m
   await f.runtime.stop();
 });
 
+test('scheduled jobs retain the calendar title after the event leaves the calendar snapshot', async () => {
+  const f = await fixture(async () => [{ ...meeting, summary: 'Fanz <> Jiho monthly' }]);
+  await f.runtime.start({ timers: false });
+  try {
+    await f.runtime.pollCalendars();
+    await f.runtime.tick();
+    assert.equal(f.records[0].meetingTitle, 'Fanz <> Jiho monthly');
+    assert.equal(f.records[0].payload.name, 'Recorder');
+    f.pending.clear();
+    f.records[0].state = 'completed';
+    f.records[0].outcome = { status: 'completed', timestamp: new Date(epoch).toISOString() };
+    await f.store.update(state => { state.calendars[0].events = []; });
+    await f.runtime.tick();
+    assert.equal(f.records.length, 1);
+    assert.equal((await f.ledger.listDispatches())[0].meetingTitle, 'Fanz <> Jiho monthly');
+  } finally { await f.runtime.stop(); }
+});
+
 test('poll failures retain the snapshot, but the five minute cutoff withdraws pending jobs', async () => {
   let fail = false;
   const f = await fixture(async () => { if (fail) throw new GooglePollError('transient', 'unavailable'); return [meeting]; });

@@ -86,6 +86,18 @@ test('requires explicit initialization and strict AOF configuration', async () =
   finally { await client.configSet('appendfsync', 'always'); }
 });
 
+test('calendar title survives enqueue and result ingestion in durable history', async () => {
+  const meeting = { ...record(), meetingTitle: 'Lili-o <> Jiho monthly' };
+  await ledger.enqueue(meeting);
+  await pushResult(completion(meeting.botId));
+  await ledger.ingestResults();
+  const reopened = new RedisLedger(client, config);
+  const saved = (await reopened.listDispatches()).find(item => item.botId === meeting.botId);
+  assert.equal(saved?.meetingTitle, 'Lili-o <> Jiho monthly');
+  assert.equal(saved?.outcome?.status, 'completed');
+  assert.equal(saved?.payload.name, 'Fixture bot');
+});
+
 test('duplicate enqueue and lost reply replay stay idempotent after pickup and completion', async () => {
   const first = record();
   assert.equal((await ledger.enqueue(first))?.botId, first.botId);
