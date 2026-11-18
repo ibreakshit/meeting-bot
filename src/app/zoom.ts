@@ -21,7 +21,8 @@ const joinZoom = async (req: Request, res: Response) => {
     userId,
     eventId,
     botId,
-    thumbnailId
+    thumbnailId,
+    passcode
   }: MeetingJoinParams = req.body;
 
   // Validate required fields
@@ -29,6 +30,13 @@ const joinZoom = async (req: Request, res: Response) => {
     return res.status(400).json({
       success: false,
       error: 'Missing required fields: bearerToken, url, name, teamId, timezone, userId'
+    });
+  }
+
+  if (passcode !== undefined && (typeof passcode !== 'string' || !/^\S{1,64}$/.test(passcode))) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid passcode: expected 1-64 non-space characters'
     });
   }
 
@@ -66,7 +74,7 @@ const joinZoom = async (req: Request, res: Response) => {
 
       // Create and join the meeting
       const bot = new ZoomBot(logger, correlationId);
-      await bot.join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, uploader });
+      await bot.join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, thumbnailId, passcode, uploader });
     }, logger, 0, (error) => notifyMeetingJoinFailure({
       bearerToken,
       url,
