@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
+import { chromium } from 'playwright';
 
 const image = process.env.CHROME_SIDECAR_TEST_IMAGE || 'meeting-bot-chrome:local';
 
@@ -74,4 +75,26 @@ test('Chrome sidecar recovers after graceful restarts and abrupt host shutdowns'
   await waitForChrome(container);
   assert.equal(docker('exec', container, 'cat', '/tmp/chrome-profile/restart-test'), 'preserved');
   assert.doesNotMatch(logs(container), /wait: .*no such job/);
+});
+
+test('Chrome sidecar keeps meeting pages clickable when they try to launch a desktop app', { timeout: 60_000 }, async t => {
+  const container = `meeting-bot-chrome-protocol-test-${randomUUID()}`;
+  t.after(() => { docker('rm', '--force', container); });
+  docker('run', '--detach', '--name', container, '--shm-size', '1g', '--publish', '127.0.0.1::9223',
+    '--mount', `type=bind,source=${resolve('scripts/start-chrome-cdp.sh')},target=/usr/local/bin/start-chrome-cdp,readonly`, image);
+  await waitForChrome(container);
+  const port = docker('port', container, '9223/tcp').split('\n')[0].split(':').pop();
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  t.after(() => browser.close());
+  const page = await browser.contexts()[0].newPage();
+  // Zoom's /j/ page opens zoommtg:// on load. Without the auto-launch policy Chrome shows a
+  // tab-modal "Open xdg-open?" dialog that silently drops every click sent to the page.
+  await page.route('https://zoom.example/**', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html>
+    <button style="position:absolute;left:100px;top:100px;width:200px;height:60px" onclick="document.body.dataset.clicked = 'yes'">Join from browser</button>
+    <script>setTimeout(() => { location.href = 'zoommtg://zoom.us/join?confno=1'; }, 100);</script>` }));
+  await page.goto('https://zoom.example/j/1');
+  await page.waitForTimeout(1500);
+  await page.click('button');
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('body').getAttribute('data-clicked'), 'yes', 'a protocol launch prompt must not swallow page clicks');
 });
