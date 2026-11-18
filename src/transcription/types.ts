@@ -35,4 +35,6 @@ export interface OwnedRange { segmentId: string; start: number; end: number }
 export interface CorrectionProposal { sourceHash: string; patches: CorrectionPatch[]; unresolved: UnresolvedSpan[]; owned?: OwnedRange[] }
 export interface CorrectionResult { segments: TranscriptSegment[]; applied: AppliedCorrection[]; rejected: { patch: CorrectionPatch; reason: string }[]; unresolved: UnresolvedSpan[] }
 export interface CorrectionChunk { sourceHash: string; owned: OwnedRange[]; messages: { role: string; content: string }[]; tokenCount: number }
-export interface CorrectionBudget { contextTokens: number; completionTokens: number; safetyTokens: number; countTokens: (formattedMessages: string) => Promise<number> }
+export interface CorrectionContextSummary { summary: string; evidence: { segmentId: string; quote: string }[] }
+export interface CorrectionBudget {
+  maxInputTokens?: number; contextTokens: number; completionTokens: number; safetyTokens: number; countTokens: (formattedMessages: string) => Promise<number> }

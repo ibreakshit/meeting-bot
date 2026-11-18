@@ -383,6 +383,7 @@ export class RedisLedger {
       botId: record.botId, payload: record.payload, serializedPayload: record.serializedPayload,
       memberInstanceKeys: [...new Set(record.memberInstanceKeys)], pushedAt: record.pushedAt,
       scheduledStart: record.scheduledStart, scheduledEnd: record.scheduledEnd, state: 'queued',
+      ...(record.meetingTitle?.trim() ? { meetingTitle: record.meetingTitle.trim() } : {}),
       ...(record.source ? { source: record.source } : {}),
       ...(link ? { roomId: link.roomId } : {}),
       ...(replacesBotId ? { replacesBotId } : {})

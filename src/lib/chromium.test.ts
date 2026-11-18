@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, Server } from 'node:http';
 import { Browser, chromium } from 'playwright';
-import { createLogger } from 'winston';
+import { createLogger, transports } from 'winston';
 import config from '../config';
 import createBrowserContext, { closeBotBrowser, isExternalBrowserContext } from './chromium';
 import { FFmpegRecorder } from './ffmpegRecorder';
@@ -167,11 +167,21 @@ for (const provider of ['google', 'zoom', 'microsoft'] as const) {
         assert.deepEqual(tracks, ['audio', 'video']);
         // Exercise the actual local display/audio recorder with the persistent browser open.
         const path = join(directory, 'teams-capture.webm');
-        const recorder = new FFmpegRecorder(path, createLogger({ silent: true }));
+        const recorderLogger = createLogger({ transports: [new transports.Console({ silent: true })] });
+        const recordedFrame = new Promise<void>(resolve => recorderLogger.on('data', entry => {
+          const output = [entry.message, ...(entry[Symbol.for('splat')] || [])].join(' ');
+          if (/frame=\s*[1-9]\d*/.test(output)) resolve();
+        }));
+        const recorder = new FFmpegRecorder(path, recorderLogger);
+        let frameTimeout: NodeJS.Timeout | undefined;
         try {
           await recorder.start();
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        } finally { await recorder.stop(); }
+          // PulseAudio probing can outlast a fixed one-second recording. Wait
+          // for an encoded frame before testing recorder shutdown and file metadata.
+          await Promise.race([recordedFrame, new Promise<never>((_resolve, reject) => {
+            frameTimeout = setTimeout(() => reject(new Error('FFmpeg did not encode a frame within ten seconds')), 10_000);
+          })]);
+        } finally { clearTimeout(frameTimeout); await recorder.stop(); }
         const probe = await promisify(execFile)('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', path]);
         const streams = JSON.parse(probe.stdout).streams as Array<{ codec_type: string }>;
         assert.deepEqual(streams.map(stream => stream.codec_type).sort(), ['audio', 'video']);
@@ -257,7 +267,8 @@ for (const mode of ['direct', 'auto', 'click']) {
     let timeout: NodeJS.Timeout | undefined;
     try {
       await Promise.race([joining, new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error('Teams did not advance past its launcher within six seconds')), 6000);
+        // Human cursor pacing adds a few seconds; a launcher hang waits out openPrejoin's 60s.
+        timeout = setTimeout(() => reject(new Error('Teams did not join within twelve seconds')), 12_000);
       })]);
       assert.equal(reachedRecording, true);
     } finally {

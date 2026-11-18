@@ -216,13 +216,17 @@ async function createBrowserContext(url: string, correlationId: string, botType:
       correlationId
     );
 
-    const context = browser.contexts()[0] ?? await browser.newContext({
+    const profileContext = browser.contexts()[0];
+    const context = profileContext ?? await browser.newContext({
       ...contextOptions,
       ...(botType === 'google' && config.googleChromeStorageStatePath ? {
         storageState: config.googleChromeStorageStatePath,
       } : {}),
     });
     externalBrowserContexts.add(context);
+    // playwright-extra binds page plugins only for new contexts. Bind the existing
+    // CDP context too, preserving its cookies and storage across meeting jobs.
+    if (context === profileContext) await chromium['_bindBrowserContextEvents'](context);
     if (botType !== 'google') {
       await context.grantPermissions(['microphone', 'camera'], { origin: url });
     }

@@ -3,13 +3,18 @@ import { join } from 'node:path';
 
 export interface TranscriptionConfig {
   python: string; whisperxRoot: string; runner: string; aiRoot: string; stageTimeoutMs: number;
+  correctionInputTokens: number; correctionRequestTimeoutMs: number;
   whisperUrl: string; gemmaUrl: string; correctionEnabled: boolean;
 }
 export function loadTranscriptionConfig(env: NodeJS.ProcessEnv = process.env): TranscriptionConfig {
   const whisperxRoot = env.TRANSCRIPTION_WHISPERX_ROOT || join(homedir(), 'Workspace/whisperx');
   const stageTimeoutMs = Number(env.TRANSCRIPTION_STAGE_TIMEOUT_SECONDS || 3600) * 1000;
   if (!Number.isSafeInteger(stageTimeoutMs) || stageTimeoutMs <= 0) throw new Error('Invalid transcription timeout');
-  return { python: env.TRANSCRIPTION_PYTHON || join(whisperxRoot, '.venv/bin/python'), whisperxRoot,
+  const correctionInputTokens = Number(env.TRANSCRIPTION_CORRECTION_INPUT_TOKENS || 3072);
+  const correctionRequestTimeoutMs = Number(env.TRANSCRIPTION_CORRECTION_REQUEST_TIMEOUT_SECONDS || 360) * 1000;
+  if (!Number.isSafeInteger(correctionInputTokens) || correctionInputTokens < 1536 || correctionInputTokens > 5632) throw new Error('Invalid correction input budget');
+  if (!Number.isSafeInteger(correctionRequestTimeoutMs) || correctionRequestTimeoutMs <= 0) throw new Error('Invalid correction request timeout');
+  return { correctionInputTokens, correctionRequestTimeoutMs, python: env.TRANSCRIPTION_PYTHON || join(whisperxRoot, '.venv/bin/python'), whisperxRoot,
     runner: join(process.cwd(), 'scripts/transcription/whisperx_runner.py'),
     aiRoot: env.TRANSCRIPTION_AI_ROOT || join(homedir(), 'Workspace/ai'), stageTimeoutMs,
     whisperUrl: env.TRANSCRIPTION_WHISPER_URL || 'http://127.0.0.1:8090',

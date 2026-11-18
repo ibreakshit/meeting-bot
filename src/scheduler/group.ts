@@ -74,7 +74,7 @@ export function buildGroups(state: SchedulerState, now: number, maxAgeSeconds: n
   return [...clusters.values()].map(cluster => {
     const memberKeys = [...new Set(cluster.map(member => member.key))].sort();
     const override = effectiveOverride(memberKeys, state.overrides);
-    const authorizing = cluster.filter(member => member.eligible && override?.mode !== 'skip' && (override?.mode === 'join' || member.decision.join)).sort(primaryOrder);
+    const authorizing = cluster.filter(member => member.eligible && !['declined', 'unconfirmed'].includes(member.decision.reason) && override?.mode !== 'skip' && (override?.mode === 'join' || member.decision.join)).sort(primaryOrder);
     const primary = authorizing[0];
     const display = cluster.filter(member => Number.isFinite(member.start) && Number.isFinite(member.end));
     const bounds = authorizing.length ? authorizing : display;

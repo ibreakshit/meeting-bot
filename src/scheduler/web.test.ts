@@ -603,7 +603,8 @@ test('meeting drawer plays and seeks authenticated video without resetting for t
       await player.evaluate((video: HTMLVideoElement) => video.play());
       const url = await player.getAttribute('src');
       await page.getByRole('button', { name: 'Original', exact: true }).click();
-      await page.getByText('gloomit connects the team for our weekly review.', { exact: true }).waitFor();
+      await page.locator('.transcript-turn p').filter({ hasText: 'gloomit connects the team for our weekly review.' }).waitFor();
+      assert.equal(await page.locator('.transcript-turn').count(), 1);
       assert.equal(await player.getAttribute('src'), url);
       assert.ok(await player.evaluate((video: HTMLVideoElement) => video.currentTime >= 1.1));
       assert.equal(await player.evaluate((video: HTMLVideoElement) => video.paused), false);
@@ -635,4 +636,39 @@ test('meeting drawer plays and seeks authenticated video without resetting for t
       console.log('Meeting drawer screenshots: ' + directory);
     });
   } finally { await browser.close(); await unlink(fixturePath).catch(() => undefined); }
+});
+
+test('processing reports are authenticated and drawer status follows worker events and transcript state', async () => {
+  const f = fixture();
+  const record = dispatchRecord({ state: 'picked_up' });
+  f.deps.config.transcriptionEnabled = true;
+  f.deps.ledger.listDispatches = async () => [record];
+  f.deps.ledger.addLog = async report => { record.logs = [...(record.logs || []), { ...report, receivedAt: Date.now() }]; };
+  let manifest: import('../transcription/types').TranscriptManifest | null = null;
+  f.deps.transcriptQueue = { get: async () => manifest };
+  await server(f, async url => {
+    const path = '/recordings/b/processing';
+    const headers = { ...host, Cookie: cookie(f) };
+    const report = (stage: string, authorized = true) => fetch(url + '/v2/meeting/app/bot/processing', { method: 'PATCH', headers: { ...host, 'Content-Type': 'application/json', ...(authorized ? { Authorization: 'Bearer test-bearer' } : {}) }, body: JSON.stringify({ botId: 'b', stage }) });
+    assert.notEqual((await fetch(url + path, { headers: host })).status, 200);
+    assert.equal((await report('encoding', false)).status, 401);
+    assert.equal((await report('bogus')).status, 400);
+    assert.equal((await report('encoding')).status, 200);
+    const response = await fetch(url + path, { headers });
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+    assert.deepEqual(await response.json(), { videoState: 'encoding', recordingReady: false, originalState: 'waiting', correctionState: 'waiting' });
+    record.state = 'unknown';
+    assert.equal((await (await fetch(url + path, { headers })).json()).videoState, 'unknown');
+    record.state = 'picked_up';
+    assert.equal((await report('uploading')).status, 200);
+    assert.equal((await (await fetch(url + path, { headers })).json()).videoState, 'uploading');
+    record.outcome = { status: 'failed', timestamp: new Date().toISOString(), error: { message: 'Upload failed' } };
+    assert.equal((await (await fetch(url + path, { headers })).json()).videoState, 'failed');
+    record.recording = { botId: 'b', recordingId: 'r', timestamp: new Date().toISOString(), storage: { provider: 's3', bucket: f.deps.config.s3.bucket, key: 'private-recording.mp4' } };
+    manifest = { originalState: 'running', correctionState: 'pending' } as never;
+    assert.deepEqual(await (await fetch(url + path, { headers })).json(), { videoState: 'ready', recordingReady: true, originalState: 'running', correctionState: 'pending' });
+    manifest = { originalState: 'ready', correctionState: 'running' } as never;
+    assert.equal((await (await fetch(url + path, { headers })).json()).correctionState, 'running');
+    assert.equal((await fetch(url + '/recordings/unknown/processing', { headers })).status, 404);
+  });
 });

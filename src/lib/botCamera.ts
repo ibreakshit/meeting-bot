@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import type { Frame, Page } from 'playwright';
+import type { Frame, Locator, Page } from 'playwright';
+import { humanClick } from './humanCursor';
 
 interface CameraOptions {
   thumbnailId?: string;
@@ -159,15 +160,16 @@ export async function configureBotCameraControls(root: Page | Frame, provider: '
     microsoft: { on: /^Turn camera on/i, off: /^Turn camera off/i, mute: /^Mute (microphone|mic)/i },
     zoom: { on: /^Start Video/i, off: /^Stop Video/i, mute: /^Mute(?: my audio)?(?:\s|$)/i },
   }[provider];
+  const click = (target: Locator) => humanClick(target, { timeout: 2500 });
   try {
     const cameraOn = root.getByRole('button', { name: labels.on }).first();
     const cameraOff = root.getByRole('button', { name: labels.off }).first();
     const teamsVideo = root.locator('input[data-tid="toggle-video"]').first();
     if (provider === 'microsoft' && await teamsVideo.count()) {
       if (await teamsVideo.isDisabled()) logger.warn('Bot camera is unavailable or disabled by the host; continuing recording');
-      else if (!(await teamsVideo.isChecked())) await teamsVideo.check({ timeout: 2500 });
+      else if (!(await teamsVideo.isChecked())) await click(teamsVideo);
     } else if (await cameraOn.isVisible()) {
-      if (await cameraOn.isEnabled()) await cameraOn.click({ timeout: 2500 });
+      if (await cameraOn.isEnabled()) await click(cameraOn);
       else logger.warn('Bot camera is disabled by the host; continuing recording');
     } else if (!(await cameraOff.isVisible())) {
       logger.warn('Bot camera control is unavailable; continuing recording');
@@ -175,8 +177,8 @@ export async function configureBotCameraControls(root: Page | Frame, provider: '
     const mute = root.getByRole('button', { name: labels.mute }).first();
     const teamsMute = root.locator('input[data-tid="toggle-mute"]').first();
     if (provider === 'microsoft' && await teamsMute.count()) {
-      if (await teamsMute.isEnabled() && !(await teamsMute.isChecked())) await teamsMute.check({ timeout: 2500 });
-    } else if (await mute.isVisible() && await mute.isEnabled()) await mute.click({ timeout: 2500 });
+      if (await teamsMute.isEnabled() && !(await teamsMute.isChecked())) await click(teamsMute);
+    } else if (await mute.isVisible() && await mute.isEnabled()) await click(mute);
   } catch {
     logger.warn('Bot camera or microphone controls are unavailable; continuing recording');
   }

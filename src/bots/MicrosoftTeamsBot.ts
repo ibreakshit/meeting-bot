@@ -1,4 +1,5 @@
 import { configureBotCameraControls, installBotCamera } from '../lib/botCamera';
+import { humanClick, humanType } from '../lib/humanCursor';
 import { errors, Page } from 'playwright';
 import { JoinParams } from './AbstractMeetBot';
 import { BotStatus } from '../types';
@@ -117,7 +118,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
             const remainingMs = timeoutMs - (Date.now() - startedAt);
             if (remainingMs <= 0) return false;
             try {
-              await button.click({ force: true, timeout: Math.min(1500, remainingMs) });
+              await humanClick(button, { force: true, timeout: Math.min(1500, remainingMs) });
               return true;
             } catch (error) {
               if (await prejoin.isVisible()) {
@@ -191,7 +192,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       await nameInput.waitFor({ state: 'visible', timeout: 45000 });
 
       this._logger.info('Found name input field, filling with bot name...');
-      await nameInput.fill(name ? name : 'ScreenApp Notetaker');
+      await humanType(nameInput, name ? name : 'ScreenApp Notetaker');
     } catch (err) {
       this._logger.info('Name input field not found after 45s, skipping...', err instanceof Error ? err.message : String(err));
     }
@@ -217,7 +218,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
             if (isVisible) {
               const label = await cameraButton.getAttribute('aria-label');
               this._logger.info(`Clicking camera toggle: ${label}`);
-              await cameraButton.click();
+              await humanClick(cameraButton);
               await this.page.waitForTimeout(250);
               break;
             }
@@ -242,7 +243,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
             if (isVisible) {
               const label = await micButton.getAttribute('aria-label');
               this._logger.info(`Clicking microphone toggle: ${label}`);
-              await micButton.click();
+              await humanClick(micButton);
               await this.page.waitForTimeout(250);
               break;
             }
@@ -278,7 +279,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
           try {
             const button = this.page.getByRole('button', { name: new RegExp(text, 'i') });
             if (await button.isVisible({ timeout: 1000 }).catch(() => false)) {
-              await button.click();
+              await humanClick(button);
               buttonClicked = true;
               this._logger.info(`Successfully clicked "${text}" button`);
               break;
@@ -335,7 +336,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
           const visibleButtons = await this.page.locator(selector).all();
           for (const btn of visibleButtons) {
             try {
-              await btn.click({ timeout: 1000 });
+              await humanClick(btn, { timeout: 1000 });
               closeButtonsClicked++;
               clickedOnPass = true;
             } catch (err) {
