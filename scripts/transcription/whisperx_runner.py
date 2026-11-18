@@ -146,6 +146,7 @@ class WhisperXEngine:
         self.audio = self.load_audio(path)
         model = self.load_model('large-v3', device='vulkan', compute_type='float32',
                                 whisper_cpp_url=os.environ.get('WHISPER_CPP_URL', 'http://127.0.0.1:8090'),
+                                asr_options={'beam_size': 5, 'best_of': 5},
                                 local_files_only=True)
         return model.transcribe(self.audio, batch_size=8)
 

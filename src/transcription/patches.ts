@@ -18,6 +18,7 @@ export function validateAndApplyCorrections(original: OriginalTranscript, propos
       else if (!segment) reason = 'Unknown source segment';
       else if (!Number.isSafeInteger(patch.start) || !Number.isSafeInteger(patch.end) || patch.start < 0 || patch.end <= patch.start || patch.end > points(segment.text).length) reason = 'Invalid source offsets';
       else if (points(segment.text).slice(patch.start, patch.end).join('') !== patch.original) reason = 'Source quote mismatch';
+      else if (patch.replacement === patch.original) reason = 'Unchanged text';
       else if (!patch.replacement.trim()) reason = 'Sentence removal or empty replacement';
       else if (!patch.evidence.length || patch.evidence.some(evidence => !evidence.quote || !segments.get(evidence.segmentId)?.text.includes(evidence.quote))) reason = 'Evidence quote mismatch';
       else if (proposal.owned && !proposal.owned.some(range => range.segmentId === patch.segmentId && patch.start >= range.start && patch.end <= range.end)) reason = 'Outside chunk ownership';

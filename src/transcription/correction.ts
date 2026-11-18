@@ -1,25 +1,45 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadTranscriptionConfig } from './config';
-import type { CorrectionBudget, CorrectionChunk, CorrectionPatch, CorrectionProposal, OriginalTranscript, OwnedRange } from './types';
+import type { CorrectionBudget, CorrectionContextSummary, CorrectionChunk, CorrectionPatch, CorrectionProposal, OriginalTranscript, OwnedRange } from './types';
 
-async function messagesFor(original: OriginalTranscript, owned: OwnedRange[], context: OwnedRange[] = []) {
+async function messagesFor(original: OriginalTranscript, owned: OwnedRange[], context: OwnedRange[] = [], contextSummary?: CorrectionContextSummary) {
   const prompt = await readFile(join(process.cwd(), 'src/transcription/prompts/correction.txt'), 'utf8');
-  return [{ role: 'system', content: prompt }, { role: 'user', content: JSON.stringify({ sourceHash: original.sourceHash, language: original.language, owned,
+  return [{ role: 'system', content: prompt }, { role: 'user', content: JSON.stringify({ sourceHash: original.sourceHash, language: original.language, owned, ...(contextSummary ? { contextSummary } : {}),
     segments: [...context, ...owned].map(range => {
       const segment = original.segments.find(item => item.id === range.segmentId);
       if (!segment) throw new Error('Unknown correction source segment');
       return { id: segment.id, sourceStart: range.start, text: Array.from(segment.text).slice(range.start, range.end).join('') };
     }) }) }];
 }
-export async function prepareCorrectionChunks(original: OriginalTranscript, budget: CorrectionBudget): Promise<CorrectionChunk[]> {
-  const limit = budget.contextTokens - budget.completionTokens - budget.safetyTokens;
-  const make = async (owned: OwnedRange[], context: OwnedRange[] = []) => {
-    const messages = await messagesFor(original, owned, context);
-    const tokenCount = await budget.countTokens(JSON.stringify(messages));
-    if (!Number.isSafeInteger(tokenCount) || tokenCount <= 0) throw new Error('Invalid tokenizer response');
-    return { sourceHash: original.sourceHash, owned, messages, tokenCount };
-  };
+async function makeChunk(original: OriginalTranscript, budget: CorrectionBudget, owned: OwnedRange[], context: OwnedRange[] = [], contextSummary?: CorrectionContextSummary): Promise<CorrectionChunk> {
+  const messages = await messagesFor(original, owned, context, contextSummary);
+  const tokenCount = await budget.countTokens(JSON.stringify(messages));
+  if (!Number.isSafeInteger(tokenCount) || tokenCount <= 0) throw new Error('Invalid tokenizer response');
+  return { sourceHash: original.sourceHash, owned, messages, tokenCount };
+}
+
+/** Split only owned source ranges, retaining immutable offsets and the shared summary. */
+export async function splitCorrectionChunk(original: OriginalTranscript, chunk: CorrectionChunk, budget: CorrectionBudget, contextSummary?: CorrectionContextSummary): Promise<CorrectionChunk[]> {
+  const size = chunk.owned.reduce((total, range) => total + range.end - range.start, 0);
+  if (size < 2) throw new Error('Correction chunk cannot be split further');
+  let remaining = Math.floor(size / 2);
+  const left: OwnedRange[] = [], right: OwnedRange[] = [];
+  for (const range of chunk.owned) {
+    const length = Math.min(remaining, range.end - range.start);
+    if (length > 0) left.push({ ...range, end: range.start + length });
+    if (range.start + length < range.end) right.push({ ...range, start: range.start + length });
+    remaining -= length;
+  }
+  return Promise.all([left, right].map(owned => makeChunk(original, budget, owned, [], contextSummary)));
+}
+export class CorrectionResponseTooLongError extends Error {
+  constructor() { super('Correction response incomplete: output limit exceeded'); }
+}
+
+export async function prepareCorrectionChunks(original: OriginalTranscript, budget: CorrectionBudget, contextSummary?: CorrectionContextSummary): Promise<CorrectionChunk[]> {
+  const limit = Math.min(budget.maxInputTokens ?? Infinity, budget.contextTokens - budget.completionTokens - budget.safetyTokens);
+  const make = (owned: OwnedRange[], context: OwnedRange[] = []) => makeChunk(original, budget, owned, context, contextSummary);
   const ranges = original.segments.map(segment => ({ segmentId: segment.id, start: 0, end: Array.from(segment.text).length }));
   const full = await make(ranges);
   if (full.tokenCount <= limit) return [full];
@@ -64,15 +84,16 @@ function isPatch(value: unknown): value is CorrectionPatch {
   const p = value as CorrectionPatch;
   return ['id', 'segmentId', 'original', 'replacement'].every(key => typeof (value as Record<string, unknown>)[key] === 'string') && Number.isSafeInteger(p.start) && Number.isSafeInteger(p.end) && Array.isArray(p.evidence) && p.evidence.every(e => e && typeof e.segmentId === 'string' && typeof e.quote === 'string');
 }
-export async function proposeCorrections(chunk: CorrectionChunk, signal: AbortSignal, options: { fetcher?: typeof fetch; baseUrl?: string } = {}): Promise<CorrectionProposal> {
+export async function proposeCorrections(chunk: CorrectionChunk, signal: AbortSignal, options: { fetcher?: typeof fetch; baseUrl?: string; timeoutMs?: number } = {}): Promise<CorrectionProposal> {
   const fetcher = options.fetcher || fetch;
   const response = await fetcher(`${options.baseUrl || loadTranscriptionConfig().gemmaUrl}/chat/completions`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.any([signal, AbortSignal.timeout(120000)]),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs ?? loadTranscriptionConfig().correctionRequestTimeoutMs)]),
     body: JSON.stringify({ model: 'gemma-4-e4b-it-q6', messages: chunk.messages, temperature: 0, max_tokens: 2048,
       reasoning_budget_tokens: 512, chat_template_kwargs: { enable_thinking: true }, response_format: { type: 'json_object' } })
   });
   if (!response.ok) throw new Error('Correction service unavailable');
   const body = await response.json() as { choices?: { finish_reason: string; message: { content: string } }[]; usage?: { prompt_tokens: number } };
+  if (body.choices?.length === 1 && body.choices[0].finish_reason === 'length') throw new CorrectionResponseTooLongError();
   if (body.choices?.length !== 1 || body.choices[0].finish_reason !== 'stop') throw new Error('Correction response incomplete');
   if (body.usage?.prompt_tokens !== chunk.tokenCount) throw new Error('Correction tokenizer usage mismatch');
   let proposal: CorrectionProposal;
@@ -80,7 +101,7 @@ export async function proposeCorrections(chunk: CorrectionChunk, signal: AbortSi
   if (proposal.sourceHash !== chunk.sourceHash || !Array.isArray(proposal.patches) || !proposal.patches.every(isPatch) || !Array.isArray(proposal.unresolved) || !proposal.unresolved.every(span => span && typeof span.segmentId === 'string' && Number.isSafeInteger(span.start) && Number.isSafeInteger(span.end) && typeof span.reason === 'string')) throw new Error('Invalid correction schema');
   return { sourceHash: proposal.sourceHash, patches: proposal.patches, unresolved: proposal.unresolved, owned: chunk.owned };
 }
-export function localTokenCounter(baseUrl = loadTranscriptionConfig().gemmaUrl, signal = new AbortController().signal): CorrectionBudget['countTokens'] {
+export function localTokenCounter(baseUrl = loadTranscriptionConfig().gemmaUrl, signal = new AbortController().signal, enableThinking = true): CorrectionBudget['countTokens'] {
   const root = baseUrl.replace(/\/v1\/?$/, '');
   const post = async (path: string, value: unknown) => {
     const response = await fetch(`${root}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value), signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]) });
@@ -88,7 +109,7 @@ export function localTokenCounter(baseUrl = loadTranscriptionConfig().gemmaUrl, 
     return response.json();
   };
   return async formatted => {
-    const template = await post('/apply-template', { messages: JSON.parse(formatted), chat_template_kwargs: { enable_thinking: true }, add_generation_prompt: true }) as { prompt?: string };
+    const template = await post('/apply-template', { messages: JSON.parse(formatted), chat_template_kwargs: { enable_thinking: enableThinking }, add_generation_prompt: true }) as { prompt?: string };
     if (typeof template.prompt !== 'string') throw new Error('Local template contract unavailable');
     const tokenized = await post('/tokenize', { content: template.prompt, add_special: true }) as { tokens?: unknown[] };
     if (!Array.isArray(tokenized.tokens)) throw new Error('Local tokenizer contract unavailable');

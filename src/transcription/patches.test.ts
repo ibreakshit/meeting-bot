@@ -40,3 +40,10 @@ test('spelled-out numerical content is preserved', () => {
   const result = validateAndApplyCorrections({ sourceHash: 'hash', language: 'en', segments: [{ id: 's', text, words: [] }] }, [{ sourceHash: 'hash', unresolved: [], patches: [{ id: 'p', segmentId: 's', start: 0, end: 6, original: text, replacement: 'thirty', evidence: [{ segmentId: 's', quote: text }] }] }]);
   assert.equal(result.applied.length, 0);
 });
+
+test('unchanged model patches never become corrections', () => {
+  const source = { sourceHash: 'hash', language: 'en', segments: [{ id: 's', text: 'Hello', words: [] }] };
+  const result = validateAndApplyCorrections(source, [{ sourceHash: 'hash', patches: [{ id: 'p', segmentId: 's', start: 0, end: 5, original: 'Hello', replacement: 'Hello', evidence: [{ segmentId: 's', quote: 'Hello' }] }], unresolved: [] }]);
+  assert.equal(result.applied.length, 0);
+  assert.equal(result.segments[0].text, 'Hello');
+});
