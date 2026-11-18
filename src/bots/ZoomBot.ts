@@ -112,6 +112,8 @@ export class ZoomBot extends BotBase {
 
     const attempts = 3;
     let usingDirectWebClient = false;
+    // Zoom has shipped this as a "Join from your browser" link and a "Join from browser" button.
+    const joinFromBrowserLocator = () => this.page.locator('a, button').filter({ hasText: /Join from (your )?browser/i }).first();
     const findAndEnableJoinFromBrowserButton = async (retry: number): Promise<boolean> => {
       try {
         if (retry >= attempts) {
@@ -130,7 +132,7 @@ export class ZoomBot extends BotBase {
           await humanClick(launchDownloadGetByRole, { force: true });
         }
 
-        const joinFromBrowser = this.page.locator('a', { hasText: 'Join from your browser' }).first();
+        const joinFromBrowser = joinFromBrowserLocator();
         await joinFromBrowser.waitFor({ timeout: 4000 });
 
         if (await joinFromBrowser.isVisible({ timeout: 500 }).catch(() => false)) {
@@ -179,7 +181,7 @@ export class ZoomBot extends BotBase {
             }
 
             try {
-              const joinFromBrowser = this.page.locator('a', { hasText: 'Join from your browser' }).first();
+              const joinFromBrowser = joinFromBrowserLocator();
               if (await joinFromBrowser.isVisible({ timeout: 500 }).catch(() => false)) {
                 this._logger.info('Waiting for zoom navigation to meeting page...', params.userId);
               }

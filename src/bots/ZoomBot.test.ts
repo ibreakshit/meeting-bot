@@ -23,7 +23,7 @@ const clickLog = `<script>
 const pages: Record<string, string> = {
   '/j/123': `<!doctype html><body>${clickLog}
     <button id="cookies" style="position:fixed;left:40px;bottom:40px" onclick="this.remove()">Accept Cookies</button>
-    <a id="browser" href="/wc/123/join" style="position:absolute;left:700px;top:300px">Join from your browser</a></body>`,
+    <button id="browser" onclick="location.href = '/wc/123/join'" style="position:absolute;left:700px;top:300px">Join from browser</button></body>`,
   '/wc/123/join': `<!doctype html><body style="margin:0">${clickLog}<iframe id="webclient" src="/wc/frame" style="width:1200px;height:700px;border:0"></iframe></body>`,
   '/wc/frame': `<!doctype html><body>${clickLog}
     <div id="prompt" style="position:absolute;left:300px;top:400px"><p>Do you want people to see you in the meeting?</p>
